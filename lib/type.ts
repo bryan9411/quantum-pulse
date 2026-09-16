@@ -57,14 +57,14 @@ export interface TelemetryMetrics {
 }
 
 export type DataSourcePayloadMap = {
-  tick: TradeTick;
-  depth: OrderBookDepth;
-  status: { status: ConnectionStatus; message?: string };
-  metrics: TelemetryMetrics;
+  tick: TradeTick
+  depth: OrderBookDepth
+  status: { status: ConnectionStatus, message?: string }
+  metrics: TelemetryMetrics
 }
 
 export type DataSourceEvent =
-  | { type: 'tick'; data: TradeTick; timestamp: number }
-  | { type: 'depth'; data: OrderBookDepth; timestamp: number }
-  | { type: 'status'; data: { status: ConnectionStatus; message?: string }; timestamp: number }
-  | { type: 'metrics'; data: TelemetryMetrics; timestamp: number }
+  | { type: 'tick', data: TradeTick, timestamp: number }
+  | { type: 'depth', data: OrderBookDepth, timestamp: number }
+  | { type: 'status', data: { status: ConnectionStatus, message?: string }, timestamp: number }
+  | { type: 'metrics', data: TelemetryMetrics, timestamp: number }
