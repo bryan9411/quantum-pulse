@@ -1,4 +1,5 @@
 import type { TradeTick, OrderBookDepth } from '@/lib/type'
+import { encodeTicksToBuffer } from '@/lib/binary-protocol'
 
 const ctx: Worker = self as unknown as Worker
 
@@ -17,6 +18,7 @@ export type StreamCommand =
  */
 export type StreamEvent =
   | { type: 'BATCH_TICKS', ticks: TradeTick[], count: number }
+  | { type: 'BINARY_BATCH_TICKS', buffer: ArrayBuffer, count: number }
   | { type: 'LATEST_DEPTH', depth: OrderBookDepth }
   | { type: 'METRICS', metrics: { tps: number, queueSize: number, lastLatencyMs: number } }
   | { type: 'STATUS', status: 'idle' | 'running' | 'stopped' }
@@ -47,11 +49,17 @@ const flushBatch = () => {
 		const ticksToSend = tickBuffer
 		tickBuffer = []
 
-		ctx.postMessage({
-			type: 'BATCH_TICKS',
-			ticks: ticksToSend,
-			count: ticksToSend.length
-		} as StreamEvent)
+		const view = encodeTicksToBuffer(ticksToSend)
+		const buffer = view.buffer
+
+		ctx.postMessage(
+			{
+				type: 'BINARY_BATCH_TICKS',
+				buffer,
+				count: ticksToSend.length
+			} as StreamEvent,
+			[buffer]
+		)
 	}
 
 	// 計算即時 TPS (每 1000ms 計算一次)
