@@ -5,6 +5,7 @@ import { MockDataSource } from '@/lib/mock-data-source'
 import type { TradeTick, OrderBookDepth } from '@/lib/type'
 import { TpsController } from '@/components/tps-controller'
 import { runBenchmark, type BenchmarkResult } from '@/lib/benchmark-runner'
+import { runQueueBenchmark, type QueueBenchmarkResult } from '@/lib/queue-benchmark'
 
 export default function NaivePage() {
   const [currentTick, setCurrentTick] = useState<TradeTick | null>(null)
@@ -13,6 +14,9 @@ export default function NaivePage() {
   const [isRunning, setIsRunning] = useState(false)
   const [benchmarking, setBenchmarking] = useState(false)
   const [benchResults, setBenchResults] = useState<BenchmarkResult[]>([])
+
+  const [queueBenchmarking, setQueueBenchmarking] = useState(false)
+  const [queueBenchResult, setQueueBenchResult] = useState<QueueBenchmarkResult | null>(null)
 
   const renderCountRef = useRef(0)
   renderCountRef.current++
@@ -79,6 +83,16 @@ export default function NaivePage() {
     }
   }
 
+  const handleRunQueueBenchmark = () => {
+    setQueueBenchmarking(true)
+    setTimeout(() => {
+      const res = runQueueBenchmark(100000)
+
+      setQueueBenchResult(res)
+      setQueueBenchmarking(false)
+    }, 50)
+  }
+
   return (
     <div className='min-h-screen bg-zinc-50 p-8 font-sans text-zinc-900 dark:bg-black dark:text-zinc-100'>
       <div className='mx-auto max-w-4xl space-y-6'>
@@ -94,7 +108,7 @@ export default function NaivePage() {
           </div>
           <div className='text-right'>
             <div className='font-mono text-xs text-zinc-500'>總渲染次數</div>
-            <div className='font-mono text-2xl font-bold text-amber-600 dark:text-amber-400'>
+            <div suppressHydrationWarning className='font-mono text-2xl font-bold text-amber-600 dark:text-amber-400'>
               {renderCountRef.current.toLocaleString()}
             </div>
           </div>
@@ -142,6 +156,54 @@ export default function NaivePage() {
                   </div>
                 </div>
               ))}
+            </div>
+          )}
+        </div>
+
+        {/* 4-A 佇列記憶體位移碰撞測試卡片 */}
+        <div className='rounded-xl border border-amber-200 bg-amber-50/50 p-6 dark:border-amber-900/50 dark:bg-amber-950/20'>
+          <div className='flex items-center justify-between mb-4'>
+            <div>
+              <h2 className='text-sm font-bold text-amber-900 dark:text-amber-300'>
+                💥 4-A 第零層碰撞：Array.push vs push + shift (100,000 次操作)
+              </h2>
+              <p className='text-xs text-amber-700/80 dark:text-amber-400/80 mt-0.5'>
+                親眼觀察 V8 引擎連續記憶體 FixedArray 在 shift 時強制搬遷（O(n) memmove）的恐怖代價
+              </p>
+            </div>
+            <button
+              onClick={handleRunQueueBenchmark}
+              disabled={queueBenchmarking}
+              className='px-4 py-2 text-xs font-semibold rounded-lg bg-amber-600 text-white hover:bg-amber-700 transition disabled:opacity-50 cursor-pointer shadow-xs'
+            >
+              {queueBenchmarking ? '計算中（主執行緒卡頓中）...' : '開始 10 萬次佇列碰撞'}
+            </button>
+          </div>
+
+          {queueBenchResult && (
+            <div className='grid grid-cols-1 md:grid-cols-3 gap-4 mt-4 font-mono text-xs'>
+              <div className='p-4 rounded-lg border border-emerald-300 bg-emerald-50/60 dark:border-emerald-900/50 dark:bg-emerald-950/20 text-emerald-950 dark:text-emerald-200'>
+                <div className='font-bold text-sm'>純 push</div>
+                <div className='mt-2 text-base font-extrabold'>
+                  {queueBenchResult.pushOnlyTimeMs} ms
+                </div>
+                <div className='text-[11px] opacity-75'>時間複雜度 O(1)，記憶體直接追加</div>
+              </div>
+
+              <div className='p-4 rounded-lg border border-rose-300 bg-rose-50/60 dark:border-rose-900/50 dark:bg-rose-950/20 text-rose-950 dark:text-rose-200'>
+                <div className='font-bold text-sm'>push + shift</div>
+                <div className='mt-2 text-base font-extrabold'>
+                  {queueBenchResult.pushAndShiftTimeMs} ms
+                </div>
+                <div className='text-[11px] opacity-75'>時間複雜度 O(n)，20,000 個元素集體位移</div>
+              </div>
+
+              <div className='p-4 rounded-lg border border-purple-300 bg-purple-50/60 dark:border-purple-900/50 dark:bg-purple-950/20 text-purple-950 dark:text-purple-200 flex flex-col justify-center'>
+                <div className='font-bold text-sm'>效能崩潰倍率</div>
+                <div className='mt-1 text-2xl font-black text-rose-600 dark:text-rose-400'>
+                  慢了 {queueBenchResult.slowdownFactor} 倍！
+                </div>
+              </div>
             </div>
           )}
         </div>
