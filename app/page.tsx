@@ -6,6 +6,7 @@ import type { TradeTick, OrderBookDepth } from '@/lib/type'
 import { TpsController } from '@/components/tps-controller'
 import { runBenchmark, type BenchmarkResult } from '@/lib/benchmark-runner'
 import { runQueueBenchmark, type QueueBenchmarkResult } from '@/lib/queue-benchmark'
+import { useWorkerStream } from '@/hooks/useWorkerStream'
 
 export default function NaivePage() {
   const [currentTick, setCurrentTick] = useState<TradeTick | null>(null)
@@ -17,6 +18,18 @@ export default function NaivePage() {
 
   const [queueBenchmarking, setQueueBenchmarking] = useState(false)
   const [queueBenchResult, setQueueBenchResult] = useState<QueueBenchmarkResult | null>(null)
+
+  const {
+    status: streamStatus,
+    latestTicks,
+    metrics,
+    start: startStream,
+    stop: stopStream,
+    reset: resetStream,
+    ingestTick,
+    ingestDepth,
+    burstInject
+  } = useWorkerStream()
 
   const renderCountRef = useRef(0)
   renderCountRef.current++
@@ -32,16 +45,20 @@ export default function NaivePage() {
   useEffect(() => {
     if (!isRunning) {
       dataSource.disconnect()
+      stopStream()
       return
     }
 
+    startStream(16)
     dataSource.connect()
 
     const unsubTick = dataSource.subscribe('tick', (tick) => {
+      ingestTick(tick)
       setCurrentTick(tick)
     })
 
     const unsubDepth = dataSource.subscribe('depth', (depth) => {
+      ingestDepth(depth)
       setCurrentDepth(depth)
     })
 
@@ -49,8 +66,9 @@ export default function NaivePage() {
       unsubTick()
       unsubDepth()
       dataSource.disconnect()
+      stopStream()
     }
-  }, [isRunning, dataSource])
+  }, [isRunning, dataSource, startStream, stopStream, ingestTick, ingestDepth])
 
   const handleTpsChange = (newTps: number) => {
     setTps(newTps)
@@ -206,6 +224,128 @@ export default function NaivePage() {
               </div>
             </div>
           )}
+        </div>
+
+        {/* 4-D 環形緩衝區水位即時監控卡片 */}
+        <div className='rounded-xl border border-indigo-200 bg-indigo-50/40 p-6 dark:border-indigo-900/50 dark:bg-indigo-950/20'>
+          <div className='flex flex-col md:flex-row md:items-center justify-between gap-4 mb-4'>
+            <div>
+              <div className='flex items-center gap-2'>
+                <h2 className='text-sm font-bold text-indigo-950 dark:text-indigo-200'>
+                  🌊 4-D 環形緩衝水位即時監控 (Buffer Watermark Monitor)
+                </h2>
+                <span
+                  className={`px-2 py-0.5 text-[10px] font-mono font-bold uppercase rounded-full ${metrics.watermarkStatus === 'critical'
+                      ? 'bg-rose-500 text-white animate-pulse'
+                      : metrics.watermarkStatus === 'warning'
+                        ? 'bg-amber-500 text-white'
+                        : 'bg-emerald-500/20 text-emerald-700 dark:text-emerald-300'
+                    }`}
+                >
+                  {metrics.watermarkStatus}
+                </span>
+              </div>
+              <p className='text-xs text-indigo-700/80 dark:text-indigo-400/80 mt-0.5'>
+                對標 Performance HUD：即時監測 TypedRingBuffer (4,096 格) 佔用率與 60FPS 排程消化過程
+              </p>
+            </div>
+
+            <div className='flex flex-wrap items-center gap-2'>
+              <button
+                type='button'
+                onClick={() => burstInject(2500, currentTick?.price)}
+                className='px-3 py-1.5 text-xs font-semibold rounded-lg bg-amber-500 text-white hover:bg-amber-600 transition cursor-pointer shadow-xs'
+              >
+                + 灌入 2,500 筆 (黃燈 61%)
+              </button>
+              <button
+                type='button'
+                onClick={() => burstInject(3600, currentTick?.price)}
+                className='px-3 py-1.5 text-xs font-semibold rounded-lg bg-rose-600 text-white hover:bg-rose-700 transition cursor-pointer shadow-xs'
+              >
+                + 灌入 3,600 筆 (紅燈/爆倉)
+              </button>
+              <button
+                type='button'
+                onClick={resetStream}
+                className='px-3 py-1.5 text-xs font-semibold rounded-lg border border-zinc-300 bg-white text-zinc-700 hover:bg-zinc-100 dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-300 transition cursor-pointer'
+              >
+                清空水塔
+              </button>
+            </div>
+          </div>
+
+          <div className='space-y-1.5 mb-4'>
+            <div className='flex justify-between text-xs font-mono'>
+              <span className='text-zinc-500 dark:text-zinc-400'>
+                Buffer Usage (水位佔用率)
+              </span>
+              <span className='font-bold text-indigo-950 dark:text-indigo-200'>
+                {metrics.bufferUsage.toFixed(1)}% ({metrics.queueSize.toLocaleString()} / {metrics.bufferCapacity.toLocaleString()} Ticks)
+              </span>
+            </div>
+
+            <div className='relative h-4 w-full overflow-hidden rounded-full bg-zinc-200 dark:bg-zinc-800'>
+              <div
+                className='absolute top-0 bottom-0 left-[50%] w-0.5 bg-amber-500/70 z-10'
+                title='50% Warning Watermark'
+              />
+              <div
+                className='absolute top-0 bottom-0 left-[80%] w-0.5 bg-rose-500/80 z-10'
+                title='80% Critical Watermark'
+              />
+              <div
+                className={`h-full transition-all duration-150 ${metrics.watermarkStatus === 'critical'
+                    ? 'bg-rose-500'
+                    : metrics.watermarkStatus === 'warning'
+                      ? 'bg-amber-500'
+                      : 'bg-emerald-500'
+                  }`}
+                style={{ width: `${Math.min(100, Math.max(0, metrics.bufferUsage))}%` }}
+              />
+            </div>
+
+            <div className='flex justify-between text-[10px] font-mono text-zinc-400'>
+              <span>0% (Empty)</span>
+              <span className='text-amber-600 dark:text-amber-400'>50% (Warning)</span>
+              <span className='text-rose-600 dark:text-rose-400'>80% (Critical)</span>
+              <span>100% (4,096 Max)</span>
+            </div>
+          </div>
+
+          <div className='grid grid-cols-2 md:grid-cols-4 gap-3 font-mono text-xs'>
+            <div className='p-3 rounded-lg border border-zinc-200 bg-white dark:border-zinc-800 dark:bg-zinc-950'>
+              <div className='text-[11px] text-zinc-400'>rAF 畫面幀率 (FPS)</div>
+              <div className='mt-1 text-lg font-extrabold text-emerald-600 dark:text-emerald-400'>
+                {metrics.fps} FPS
+              </div>
+              <div className='text-[10px] text-zinc-400'>最大消耗 3,600 筆/秒</div>
+            </div>
+
+            <div className='p-3 rounded-lg border border-zinc-200 bg-white dark:border-zinc-800 dark:bg-zinc-950'>
+              <div className='text-[11px] text-zinc-400'>緩衝區佔用率</div>
+              <div className='mt-1 text-lg font-extrabold text-amber-600 dark:text-amber-400'>
+                {metrics.bufferUsage.toFixed(1)}%
+              </div>
+              <div className='text-[10px] text-zinc-400'>待處理: {metrics.queueSize} 筆</div>
+            </div>
+
+            <div className='p-3 rounded-lg border border-zinc-200 bg-white dark:border-zinc-800 dark:bg-zinc-950'>
+              <div className='text-[11px] text-zinc-400'>滿載覆寫丟棄 (Dropped)</div>
+              <div className={`mt-1 text-lg font-extrabold ${metrics.droppedTicks > 0 ? 'text-rose-600 dark:text-rose-400' : 'text-zinc-700 dark:text-zinc-300'}`}>
+                {metrics.droppedTicks.toLocaleString()} 筆
+              </div>
+              <div className='text-[10px] text-zinc-400'>超過 4,096 格自動覆寫舊值</div>
+            </div>
+
+            <div className='p-3 rounded-lg border border-zinc-200 bg-white dark:border-zinc-800 dark:bg-zinc-950'>
+              <div className='text-[11px] text-zinc-400'>本幀抽出筆數 (Drained)</div>
+              <div className='mt-1 text-lg font-extrabold text-indigo-600 dark:text-indigo-400'>
+                {latestTicks.length} 筆
+              </div>
+              <div className='text-[10px] text-zinc-400'>狀態: {streamStatus}</div>
+            </div>
+          </div>
         </div>
 
         <div className='grid grid-cols-1 md:grid-cols-2 gap-6'>

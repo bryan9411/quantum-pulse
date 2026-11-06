@@ -5,6 +5,17 @@ import type { StreamCommand, StreamEvent } from '@/workers/stream-processor.work
 
 const RING_BUFFER_CAPACITY = 4096
 const MAX_TICKS_PER_FRAME = 60
+const TELEMETRY_SAMPLE_MS = 200
+const WARN_WATERMARK_PERCENT = 50
+const HIGH_WATERMARK_PERCENT = 80
+
+export type BufferWatermarkStatus = 'healthy' | 'warning' | 'critical'
+
+export const getWatermarkStatus = (usagePercent: number): BufferWatermarkStatus => {
+  if (usagePercent >= HIGH_WATERMARK_PERCENT) return 'critical'
+  if (usagePercent >= WARN_WATERMARK_PERCENT) return 'warning'
+  return 'healthy'
+}
 
 export interface WorkerStreamState {
   status: 'idle' | 'running' | 'stopped'
@@ -14,6 +25,10 @@ export interface WorkerStreamState {
     fps: number
     tps: number
     queueSize: number
+    bufferUsage: number
+    bufferCapacity: number
+    droppedTicks: number
+    watermarkStatus: BufferWatermarkStatus
     lastLatencyMs: number
   }
 }
@@ -24,6 +39,7 @@ export interface UseWorkerStreamReturn extends WorkerStreamState {
   reset: () => void
   ingestTick: (tick: TradeTick) => void
   ingestDepth: (depth: OrderBookDepth) => void
+  burstInject: (count: number, basePrice?: number) => void
 }
 
 export const useWorkerStream = (): UseWorkerStreamReturn => {
@@ -33,14 +49,20 @@ export const useWorkerStream = (): UseWorkerStreamReturn => {
   const rafIdRef = useRef<number | null>(null)
   const frameCountRef = useRef(0)
   const lastFpsSampleTimeRef = useRef(0)
+  const lastTelemetrySampleTimeRef = useRef(0)
+  const currentFpsRef = useRef(0)
 
   const [status, setStatus] = useState<'idle' | 'running' | 'stopped'>('idle')
   const [latestTicks, setLatestTicks] = useState<TradeTick[]>([])
   const [latestDepth, setLatestDepth] = useState<OrderBookDepth | null>(null)
-  const [metrics, setMetrics] = useState({
+  const [metrics, setMetrics] = useState<WorkerStreamState['metrics']>({
     fps: 0,
     tps: 0,
     queueSize: 0,
+    bufferUsage: 0,
+    bufferCapacity: RING_BUFFER_CAPACITY,
+    droppedTicks: 0,
+    watermarkStatus: 'healthy',
     lastLatencyMs: 0
   })
 
@@ -48,23 +70,19 @@ export const useWorkerStream = (): UseWorkerStreamReturn => {
     if (typeof window === 'undefined') return
 
     const ringBuffer = ringBufferRef.current
-    lastFpsSampleTimeRef.current = performance.now()
+    const startTime = performance.now()
+    lastFpsSampleTimeRef.current = startTime
+    lastTelemetrySampleTimeRef.current = startTime
     frameCountRef.current = 0
 
     const renderFrame = (now: number) => {
       frameCountRef.current++
-      const elapsed = now - lastFpsSampleTimeRef.current
+      const fpsElapsed = now - lastFpsSampleTimeRef.current
 
-      if (elapsed >= 1000) {
-        const currentFps = Math.round((frameCountRef.current * 1000) / elapsed)
+      if (fpsElapsed >= 1000) {
+        currentFpsRef.current = Math.round((frameCountRef.current * 1000) / fpsElapsed)
         frameCountRef.current = 0
         lastFpsSampleTimeRef.current = now
-
-        setMetrics((prev) => ({
-          ...prev,
-          fps: currentFps,
-          queueSize: ringBuffer.size
-        }))
       }
 
       if (ringBuffer.size > 0) {
@@ -75,6 +93,22 @@ export const useWorkerStream = (): UseWorkerStreamReturn => {
       if (pendingDepthRef.current !== null) {
         setLatestDepth(pendingDepthRef.current)
         pendingDepthRef.current = null
+      }
+
+      const telemetryElapsed = now - lastTelemetrySampleTimeRef.current
+      if (telemetryElapsed >= TELEMETRY_SAMPLE_MS) {
+        lastTelemetrySampleTimeRef.current = now
+        const usage = ringBuffer.getUsageRatio()
+
+        setMetrics((prev) => ({
+          ...prev,
+          fps: currentFpsRef.current,
+          queueSize: ringBuffer.size,
+          bufferUsage: usage,
+          bufferCapacity: ringBuffer.maxCapacity,
+          droppedTicks: ringBuffer.dropped,
+          watermarkStatus: getWatermarkStatus(usage)
+        }))
       }
 
       rafIdRef.current = window.requestAnimationFrame(renderFrame)
@@ -108,14 +142,20 @@ export const useWorkerStream = (): UseWorkerStreamReturn => {
           pendingDepthRef.current = message.depth
           break
 
-        case 'METRICS':
+        case 'METRICS': {
+          const usage = ringBuffer.getUsageRatio()
           setMetrics((prev) => ({
             ...prev,
             tps: message.metrics.tps,
             queueSize: ringBuffer.size,
+            bufferUsage: usage,
+            bufferCapacity: ringBuffer.maxCapacity,
+            droppedTicks: ringBuffer.dropped,
+            watermarkStatus: getWatermarkStatus(usage),
             lastLatencyMs: message.metrics.lastLatencyMs
           }))
           break
+        }
 
         case 'STATUS':
           setStatus(message.status)
@@ -150,16 +190,24 @@ export const useWorkerStream = (): UseWorkerStreamReturn => {
     sendCommand({ type: 'START', payload: { batchIntervalMs } })
   }, [sendCommand])
 
-  const stop = useCallback(() => {
+  const stop = useCallback((() => {
     sendCommand({ type: 'STOP' })
-  }, [sendCommand])
+  }), [sendCommand])
 
   const reset = useCallback(() => {
     sendCommand({ type: 'RESET' })
-    ringBufferRef.current.clear()
+    const ringBuffer = ringBufferRef.current
+    ringBuffer.clear()
     pendingDepthRef.current = null
     setLatestTicks([])
     setLatestDepth(null)
+    setMetrics((prev) => ({
+      ...prev,
+      queueSize: 0,
+      bufferUsage: 0,
+      droppedTicks: 0,
+      watermarkStatus: 'healthy'
+    }))
   }, [sendCommand])
 
   const ingestTick = useCallback((tick: TradeTick) => {
@@ -170,6 +218,31 @@ export const useWorkerStream = (): UseWorkerStreamReturn => {
     sendCommand({ type: 'INGEST_DEPTH', payload: depth })
   }, [sendCommand])
 
+  const burstInject = useCallback((count: number, basePrice = 67432.18) => {
+    const ringBuffer = ringBufferRef.current
+    const now = Date.now()
+
+    for (let i = 0; i < count; i++) {
+      const jitter = (Math.random() - 0.5) * 20
+      ringBuffer.push({
+        id: `burst_${now}_${i}`,
+        price: Number((basePrice + jitter).toFixed(2)),
+        size: Number((Math.random() * 1.5 + 0.01).toFixed(4)),
+        side: Math.random() > 0.5 ? 'buy' : 'sell',
+        timestamp: now + i
+      })
+    }
+
+    const usage = ringBuffer.getUsageRatio()
+    setMetrics((prev) => ({
+      ...prev,
+      queueSize: ringBuffer.size,
+      bufferUsage: usage,
+      droppedTicks: ringBuffer.dropped,
+      watermarkStatus: getWatermarkStatus(usage)
+    }))
+  }, [])
+
   return {
     status,
     latestTicks,
@@ -179,6 +252,7 @@ export const useWorkerStream = (): UseWorkerStreamReturn => {
     stop,
     reset,
     ingestTick,
-    ingestDepth
+    ingestDepth,
+    burstInject
   }
 }
