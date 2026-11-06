@@ -7,6 +7,7 @@ import type { BackpressureStrategy } from '@/lib/coalescing-strategies'
 import { TpsController } from '@/components/tps-controller'
 import { PriceChart } from '@/components/price-chart'
 import { OrderBook } from '@/components/order-book'
+import { RecentTrades } from '@/components/recent-trades'
 import { runBenchmark, type BenchmarkResult } from '@/lib/benchmark-runner'
 import { runQueueBenchmark, type QueueBenchmarkResult } from '@/lib/queue-benchmark'
 import { useWorkerStream } from '@/hooks/useWorkerStream'
@@ -427,30 +428,10 @@ export default function NaivePage() {
         />
 
         <div className='grid grid-cols-1 md:grid-cols-2 gap-6'>
-          <div className='rounded-xl border border-zinc-200 bg-white p-6 shadow-xs dark:border-zinc-800 dark:bg-zinc-950'>
-            <div className='text-xs font-semibold text-zinc-400 uppercase tracking-wider mb-2'>
-              Latest Trade Tick
-            </div>
-            {currentTick ? (
-              <div className='space-y-3 font-mono'>
-                <div className='flex items-baseline gap-3'>
-                  <span className={`text-3xl font-extrabold ${currentTick.side === 'buy' ? 'text-emerald-500' : 'text-rose-500'}`}>
-                    ${currentTick.price.toFixed(2)}
-                  </span>
-                  <span className='text-xs uppercase px-2 py-0.5 rounded font-semibold bg-zinc-100 dark:bg-zinc-800'>
-                    {currentTick.side}
-                  </span>
-                </div>
-                <div className='text-xs text-zinc-500 space-y-1'>
-                  <div>數量 (Size): {currentTick.size} BTC</div>
-                  <div>ID: {currentTick.id}</div>
-                  <div>時間戳: {currentTick.timestamp}</div>
-                </div>
-              </div>
-            ) : (
-              <div className='py-8 text-center text-sm text-zinc-400'>尚未開始接收資料</div>
-            )}
-          </div>
+          {/* 5-D 成交流水虛擬化滾動列表 */}
+          <RecentTrades
+            latestTicks={latestTicks}
+          />
 
           {/* 5-C 高資訊密度深度盤口階梯元件 */}
           <OrderBook
