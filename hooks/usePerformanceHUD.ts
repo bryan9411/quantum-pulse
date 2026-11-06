@@ -33,8 +33,8 @@ export interface UsePerformanceHUDInput {
 }
 
 const INITIAL_FPS_HISTORY = [
-  58, 59, 60, 60, 59, 60, 60, 60, 59, 60, 60, 60,
-  59, 60, 60, 60, 59, 60, 60, 60, 60, 59, 60, 60
+  56, 58, 57, 59, 58, 60, 59, 57, 59, 60, 58, 59,
+  60, 58, 59, 60, 59, 58, 60, 59, 60, 59, 60, 60
 ]
 
 const INITIAL_TPS_HISTORY = [
@@ -76,7 +76,7 @@ export const usePerformanceHUD = ({
 }: UsePerformanceHUDInput): HudTelemetrySnapshot => {
   const [snapshot, setSnapshot] = useState<HudTelemetrySnapshot>({
     fps: 60,
-    tps: 1248,
+    tps: 1000,
     jsHeapMB: 48.7,
     bufferUsage: 32.4,
     fpsHistory: INITIAL_FPS_HISTORY,
@@ -88,14 +88,14 @@ export const usePerformanceHUD = ({
   const frameCountRef = useRef(0)
   const lastRafTimeRef = useRef(0)
   const measuredFpsRef = useRef(60)
-  const latestInputRef = useRef({ currentTps, bufferUsage, isRunning })
+  const latestInputRef = useRef({ currentTps, bufferUsage })
 
   useEffect(() => {
-    latestInputRef.current = { currentTps, bufferUsage, isRunning }
-  }, [currentTps, bufferUsage, isRunning])
+    latestInputRef.current = { currentTps, bufferUsage }
+  }, [currentTps, bufferUsage])
 
   useEffect(() => {
-    if (typeof window === 'undefined') return
+    if (typeof window === 'undefined' || !isRunning) return
 
     let rafId = 0
     lastRafTimeRef.current = performance.now()
@@ -104,7 +104,7 @@ export const usePerformanceHUD = ({
     const trackFps = (now: number) => {
       frameCountRef.current++
       const elapsed = now - lastRafTimeRef.current
-      if (elapsed >= 500) {
+      if (elapsed >= 250) {
         measuredFpsRef.current = Math.min(
           60,
           Math.round((frameCountRef.current * 1000) / elapsed)
@@ -118,36 +118,24 @@ export const usePerformanceHUD = ({
     rafId = window.requestAnimationFrame(trackFps)
 
     const timer = window.setInterval(() => {
-      const { currentTps: targetTps, bufferUsage: buf, isRunning: running } = latestInputRef.current
+      const { currentTps: targetTps, bufferUsage: buf } = latestInputRef.current
 
       setSnapshot((prev) => {
-        const nextFps = running ? measuredFpsRef.current : 60
-        const tpsJitter = running ? Math.round((Math.random() - 0.5) * targetTps * 0.06) : 0
-        const nextTps = running ? Math.max(0, targetTps + tpsJitter) : 0
+        const nextFps = measuredFpsRef.current
+        const tpsJitter = Math.round((Math.random() - 0.48) * targetTps * 0.08)
+        const nextTps = Math.max(1, targetTps + tpsJitter)
         const nextHeap = readJsHeapMB(prev.jsHeapMB)
-        const nextBuffer = running ? Number(buf.toFixed(1)) : 0
+        const simulatedBuf = buf > 0 ? buf : Number((Math.min(95, (targetTps / 2500) * 65 + Math.random() * 6)).toFixed(1))
 
         return {
           fps: nextFps,
           tps: nextTps,
           jsHeapMB: nextHeap,
-          bufferUsage: nextBuffer,
-          fpsHistory: pushRolling(
-            prev.fpsHistory.length === SPARKLINE_POINTS ? prev.fpsHistory : INITIAL_FPS_HISTORY,
-            nextFps
-          ),
-          tpsHistory: pushRolling(
-            prev.tpsHistory.length === SPARKLINE_POINTS ? prev.tpsHistory : INITIAL_TPS_HISTORY,
-            nextTps
-          ),
-          heapHistory: pushRolling(
-            prev.heapHistory.length === SPARKLINE_POINTS ? prev.heapHistory : INITIAL_HEAP_HISTORY,
-            nextHeap
-          ),
-          bufferHistory: pushRolling(
-            prev.bufferHistory.length === SPARKLINE_POINTS ? prev.bufferHistory : INITIAL_BUFFER_HISTORY,
-            nextBuffer
-          )
+          bufferUsage: simulatedBuf,
+          fpsHistory: pushRolling(prev.fpsHistory, nextFps),
+          tpsHistory: pushRolling(prev.tpsHistory, nextTps),
+          heapHistory: pushRolling(prev.heapHistory, nextHeap),
+          bufferHistory: pushRolling(prev.bufferHistory, simulatedBuf)
         }
       })
     }, SAMPLE_INTERVAL_MS)
@@ -156,8 +144,7 @@ export const usePerformanceHUD = ({
       window.cancelAnimationFrame(rafId)
       window.clearInterval(timer)
     }
-  }, [])
+  }, [isRunning])
 
   return snapshot
 }
-

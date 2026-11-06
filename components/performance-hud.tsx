@@ -119,8 +119,8 @@ export const PerformanceHUD = ({
           data={hud.fpsHistory}
           strokeColor='#10b981'
           fillColor='#10b981'
-          min={0}
-          max={65}
+          min={45}
+          max={62}
         />
       </div>
 

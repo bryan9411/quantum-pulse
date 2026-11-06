@@ -12,6 +12,8 @@ import type {
 export class MockDataSource implements DataSource {
   private _status: ConnectionStatus = 'disconnected'
   private worker: Worker | null = null
+  private lastPrice = 67432.18
+  private targetTps = 1000
   private listeners: Map<DataSourceEventType, Set<DataSourceListener<any>>> = new Map()
 
   constructor() {
@@ -46,7 +48,10 @@ export class MockDataSource implements DataSource {
 
       const startCmd: WorkerInboundCommand = {
         type: 'START',
-        payload: { tps: 1000 }
+        payload: {
+          initialPrice: this.lastPrice,
+          tps: this.targetTps
+        }
       }
 
       this.worker.postMessage(startCmd)
@@ -88,6 +93,8 @@ export class MockDataSource implements DataSource {
   }
 
   setTps(tps: number): void {
+    this.targetTps = tps
+
     if (this.worker && this._status === 'connected') {
       const cmd: WorkerInboundCommand = {
         type: 'SET_TPS',
@@ -103,7 +110,7 @@ export class MockDataSource implements DataSource {
     data: DataSourcePayloadMap[T]
   ): void {
     const bucket = this.listeners.get(event)
-    
+
     if (!bucket || bucket.size === 0) return
 
     bucket.forEach((listener) => {
@@ -120,6 +127,7 @@ export class MockDataSource implements DataSource {
 
     switch (message.type) {
       case 'tick':
+        this.lastPrice = message.data.price
         this.emit('tick', message.data)
         break
 

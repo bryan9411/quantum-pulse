@@ -59,11 +59,12 @@ export const useWorkerStream = (): UseWorkerStreamReturn => {
   const lastFpsSampleTimeRef = useRef(0)
   const lastTelemetrySampleTimeRef = useRef(0)
   const currentFpsRef = useRef(0)
-  const strategyRef = useRef<BackpressureStrategy>('queue')
+  const strategyRef = useRef<BackpressureStrategy>('coalesce')
+  const statusRef = useRef<'idle' | 'running' | 'stopped'>('idle')
   const coalescedCountRef = useRef(0)
 
   const [status, setStatus] = useState<'idle' | 'running' | 'stopped'>('idle')
-  const [strategy, setStrategyState] = useState<BackpressureStrategy>('queue')
+  const [strategy, setStrategyState] = useState<BackpressureStrategy>('coalesce')
   const [latestTicks, setLatestTicks] = useState<TradeTick[]>([])
   const [latestDepth, setLatestDepth] = useState<OrderBookDepth | null>(null)
   const [metrics, setMetrics] = useState<WorkerStreamState['metrics']>({
@@ -118,20 +119,34 @@ export const useWorkerStream = (): UseWorkerStreamReturn => {
       }
 
       const telemetryElapsed = now - lastTelemetrySampleTimeRef.current
-      if (telemetryElapsed >= TELEMETRY_SAMPLE_MS) {
+      if (telemetryElapsed >= TELEMETRY_SAMPLE_MS && (statusRef.current === 'running' || ringBuffer.size > 0)) {
         lastTelemetrySampleTimeRef.current = now
         const usage = ringBuffer.getUsageRatio()
+        const nextStatus = getWatermarkStatus(usage)
 
-        setMetrics((prev) => ({
-          ...prev,
-          fps: currentFpsRef.current,
-          queueSize: ringBuffer.size,
-          bufferUsage: usage,
-          bufferCapacity: ringBuffer.maxCapacity,
-          droppedTicks: ringBuffer.dropped,
-          coalescedTicks: coalescedCountRef.current,
-          watermarkStatus: getWatermarkStatus(usage)
-        }))
+        setMetrics((prev) => {
+          if (
+            prev.fps === currentFpsRef.current &&
+            prev.queueSize === ringBuffer.size &&
+            prev.bufferUsage === usage &&
+            prev.droppedTicks === ringBuffer.dropped &&
+            prev.coalescedTicks === coalescedCountRef.current &&
+            prev.watermarkStatus === nextStatus
+          ) {
+            return prev
+          }
+
+          return {
+            ...prev,
+            fps: currentFpsRef.current,
+            queueSize: ringBuffer.size,
+            bufferUsage: usage,
+            bufferCapacity: ringBuffer.maxCapacity,
+            droppedTicks: ringBuffer.dropped,
+            coalescedTicks: coalescedCountRef.current,
+            watermarkStatus: nextStatus
+          }
+        })
       }
 
       rafIdRef.current = window.requestAnimationFrame(renderFrame)
@@ -185,6 +200,7 @@ export const useWorkerStream = (): UseWorkerStreamReturn => {
         }
 
         case 'STATUS':
+          statusRef.current = message.status
           setStatus(message.status)
           break
       }
@@ -214,10 +230,14 @@ export const useWorkerStream = (): UseWorkerStreamReturn => {
   }, [])
 
   const start = useCallback((batchIntervalMs?: number) => {
+    statusRef.current = 'running'
     sendCommand({ type: 'START', payload: { batchIntervalMs } })
   }, [sendCommand])
 
   const stop = useCallback((() => {
+    statusRef.current = 'stopped'
+    ringBufferRef.current.clear()
+    pendingDepthRef.current = null
     sendCommand({ type: 'STOP' })
   }), [sendCommand])
 

@@ -39,12 +39,12 @@ const generateInitialSeriesData = (
   let current = endPrice - 420
 
   for (let i = 0; i < count; i++) {
-    const time = (nowSec - (count - i) * 60) as UTCTimestamp
+    const time = (nowSec - (count - 1 - i)) as UTCTimestamp
     if (i === count - 1) {
       current = endPrice
     } else {
       const drift = (endPrice - current) / (count - i)
-      const noise = (Math.random() - 0.48) * 35
+      const noise = (Math.random() - 0.48) * 18
       current = Number((current + drift + noise).toFixed(2))
     }
     points[i] = { time, value: current }
