@@ -8,8 +8,8 @@ import { TpsController } from '@/components/tps-controller'
 import { PriceChart } from '@/components/price-chart'
 import { OrderBook } from '@/components/order-book'
 import { RecentTrades } from '@/components/recent-trades'
+import { PerformanceHUD } from '@/components/performance-hud'
 import { TerminalNavbar, type PipelineMode } from '@/components/terminal-navbar'
-import { PanelCard } from '@/components/ui/panel-card'
 import { runBenchmark, type BenchmarkResult } from '@/lib/benchmark-runner'
 import { runQueueBenchmark, type QueueBenchmarkResult } from '@/lib/queue-benchmark'
 import { useWorkerStream } from '@/hooks/useWorkerStream'
@@ -188,42 +188,14 @@ export default function TerminalPage() {
             currentTick={activeLatestTick}
           />
 
-          {/* 右欄：Performance 卡片 + 成交流水虛擬列表 + TPS 調頻控制器 */}
+          {/* 右欄：Performance HUD 四大 Sparkline + 成交流水虛擬列表 + TPS 調頻控制器 */}
           <div className='flex flex-col gap-3.5'>
-            <PanelCard
-              title='Performance'
-              headerRight={
-                <span className='font-mono tabular-nums text-[10px] text-zinc-400'>
-                  Renders: {renderCountRef.current.toLocaleString()}
-                </span>
-              }
-              bodyClassName='grid grid-cols-2 gap-2 pt-1 font-mono tabular-nums'
-            >
-              <div className='rounded-xl border border-zinc-100 bg-zinc-50/70 p-2.5 dark:border-zinc-800/80 dark:bg-zinc-800/40'>
-                <div className='text-[11px] font-sans text-zinc-400'>FPS</div>
-                <div className='text-lg font-extrabold text-emerald-600 dark:text-emerald-400'>
-                  {metrics.fps || 60}
-                </div>
-              </div>
-              <div className='rounded-xl border border-zinc-100 bg-zinc-50/70 p-2.5 dark:border-zinc-800/80 dark:bg-zinc-800/40'>
-                <div className='text-[11px] font-sans text-zinc-400'>TPS</div>
-                <div className='text-lg font-extrabold text-sky-600 dark:text-sky-400'>
-                  {isRunning ? tps.toLocaleString() : 0}
-                </div>
-              </div>
-              <div className='rounded-xl border border-zinc-100 bg-zinc-50/70 p-2.5 dark:border-zinc-800/80 dark:bg-zinc-800/40'>
-                <div className='text-[11px] font-sans text-zinc-400'>Buffer Usage</div>
-                <div className='text-lg font-extrabold text-amber-600 dark:text-amber-400'>
-                  {metrics.bufferUsage.toFixed(1)}%
-                </div>
-              </div>
-              <div className='rounded-xl border border-zinc-100 bg-zinc-50/70 p-2.5 dark:border-zinc-800/80 dark:bg-zinc-800/40'>
-                <div className='text-[11px] font-sans text-zinc-400'>Coalesced</div>
-                <div className='text-lg font-extrabold text-purple-600 dark:text-purple-400'>
-                  {metrics.coalescedTicks.toLocaleString()}
-                </div>
-              </div>
-            </PanelCard>
+            <PerformanceHUD
+              currentTps={tps}
+              bufferUsage={metrics.bufferUsage}
+              isRunning={isRunning}
+              renderCount={renderCountRef.current}
+            />
 
             <RecentTrades
               latestTicks={activeTicks}
