@@ -56,10 +56,10 @@ export const TpsController = ({
 
   return (
     <PanelCard
-      title='TPS Rate Controller'
+      title='TPS'
       headerRight={
         <>
-          <span className='font-mono tabular-nums text-xs font-medium text-zinc-500 dark:text-zinc-400'>
+          <span className='font-mono tabular-nums text-xs font-medium text-zinc-600 dark:text-zinc-300'>
             {currentTps.toLocaleString()} TPS
           </span>
           <button
@@ -67,10 +67,10 @@ export const TpsController = ({
             onClick={handleToggle}
             title={isRunning ? '暫停注入' : '開始注入'}
             className={cn(
-              'flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-[11px] font-medium transition-colors cursor-pointer',
+              'flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-xs font-medium transition-colors cursor-pointer',
               isRunning
-                ? 'bg-emerald-50 text-emerald-600 hover:bg-emerald-100 dark:bg-emerald-950/50 dark:text-emerald-400'
-                : 'bg-zinc-100 text-zinc-500 hover:bg-zinc-200 dark:bg-zinc-800 dark:text-zinc-400'
+                ? 'bg-emerald-50 text-emerald-700 hover:bg-emerald-100 dark:bg-emerald-950/50 dark:text-emerald-400'
+                : 'bg-zinc-100 text-zinc-600 hover:bg-zinc-200 dark:bg-zinc-800 dark:text-zinc-300'
             )}
           >
             <span
@@ -79,7 +79,7 @@ export const TpsController = ({
                 isRunning ? 'bg-emerald-500 animate-pulse' : 'bg-zinc-400'
               )}
             />
-            {isRunning ? 'Running' : 'Paused'}
+            {isRunning ? '執行中' : '已暫停'}
           </button>
         </>
       }
@@ -109,7 +109,7 @@ export const TpsController = ({
                 'py-1 text-center text-xs font-mono tabular-nums rounded-full border transition-all cursor-pointer',
                 isActive
                   ? 'border-zinc-900 bg-zinc-900 text-white font-medium shadow-xs dark:border-zinc-100 dark:bg-zinc-100 dark:text-zinc-900'
-                  : 'border-zinc-200/80 bg-white text-zinc-600 hover:bg-zinc-50 hover:border-zinc-300 dark:border-zinc-800 dark:bg-zinc-950 dark:text-zinc-400 dark:hover:bg-zinc-900'
+                  : 'border-zinc-200/80 bg-white text-zinc-600 hover:bg-zinc-50 hover:border-zinc-300 dark:border-zinc-800 dark:bg-zinc-950 dark:text-zinc-300 dark:hover:bg-zinc-900'
               )}
             >
               {preset.label}

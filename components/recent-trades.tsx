@@ -27,6 +27,30 @@ const formatTradeTime = (timestamp: number): string => {
   return `${hh}:${mm}:${ss}`
 }
 
+// 合併策略產生的摘要 Tick，id 結尾為 `_c{合併筆數}`
+const getMergedCount = (id: string): number => {
+  const match = /_c(\d+)$/.exec(id)
+  return match ? Number(match[1]) : 1
+}
+
+const SourceTag = ({ trade }: { trade: TradeTick }) => {
+  const merged = getMergedCount(trade.id)
+  return (
+    <span className='text-right'>
+      {merged > 1 ? (
+        <span
+          title={`由 ${merged} 筆成交合併而成，數量為加總`}
+          className='rounded-md bg-violet-100 px-1.5 py-0.5 font-sans text-[11px] font-semibold text-violet-700 dark:bg-violet-500/20 dark:text-violet-300'
+        >
+          合併 ×{merged}
+        </span>
+      ) : (
+        <span className='font-sans text-[11px] text-zinc-600 dark:text-zinc-300'>原始</span>
+      )}
+    </span>
+  )
+}
+
 export interface RecentTradesProps {
   latestTicks: TradeTick[]
   mode?: PipelineMode
@@ -67,28 +91,28 @@ export const RecentTrades = ({
 
   return (
     <PanelCard
-      title='Recent Trades'
+      title='最新成交'
       headerRight={
         <span
           className={cn(
-            'font-mono tabular-nums text-[10px] px-1.5 py-0.5 rounded font-semibold',
+            'font-mono tabular-nums text-[11px] px-1.5 py-0.5 rounded font-semibold',
             isAccelerated
               ? 'bg-emerald-500/10 text-emerald-700 dark:text-emerald-300'
-              : 'bg-rose-500/15 text-rose-600 dark:text-rose-400'
+              : 'bg-rose-500/15 text-rose-700 dark:text-rose-400'
           )}
         >
           {isAccelerated
-            ? `Virtual DOM: ${virtualItems.length} / ${trades.length}`
-            : `Full DOM: ${trades.length} rows`}
+            ? `虛擬列表：只畫 ${virtualItems.length} / ${trades.length} 列`
+            : `全部繪製：${trades.length} 列`}
         </span>
       }
       className={cn('h-full', className)}
       bodyClassName='flex flex-col pt-1'
     >
-      <div className='grid grid-cols-3 text-[11px] font-medium text-zinc-400 dark:text-zinc-500 px-1 pb-1.5 border-b border-zinc-100 dark:border-zinc-800/80'>
-        <span>Price (USDT)</span>
-        <span className='text-right'>Amount (BTC)</span>
-        <span className='text-right'>Time</span>
+      <div className='grid grid-cols-3 text-xs font-medium text-zinc-600 dark:text-zinc-300 px-1 pb-1.5 border-b border-zinc-200 dark:border-zinc-700/80'>
+        <span>價格 (USDT)</span>
+        <span className='text-right'>數量 (BTC)</span>
+        <span className='text-right'>來源</span>
       </div>
 
       <div
@@ -120,12 +144,14 @@ export const RecentTrades = ({
                     height: `${virtualRow.size}px`,
                     transform: `translateY(${virtualRow.start}px)`
                   }}
+                  suppressHydrationWarning
+                  title={`成交時間 ${formatTradeTime(trade.timestamp)}`}
                   className='grid grid-cols-3 items-center px-1 font-mono tabular-nums text-xs hover:bg-zinc-50 dark:hover:bg-zinc-800/50 rounded transition-colors'
                 >
                   <div
                     className={cn(
                       'flex items-center gap-1 font-semibold',
-                      isBuy ? 'text-emerald-600 dark:text-emerald-400' : 'text-rose-600 dark:text-rose-400'
+                      isBuy ? 'text-emerald-700 dark:text-emerald-400' : 'text-rose-700 dark:text-rose-400'
                     )}
                   >
                     {isBuy ? (
@@ -142,12 +168,7 @@ export const RecentTrades = ({
                     {trade.size.toFixed(4)}
                   </span>
 
-                  <span
-                    suppressHydrationWarning
-                    className='text-right text-[11px] text-zinc-400 dark:text-zinc-500'
-                  >
-                    {formatTradeTime(trade.timestamp)}
-                  </span>
+                  <SourceTag trade={trade} />
                 </div>
               )
             })}
@@ -161,12 +182,14 @@ export const RecentTrades = ({
                 <div
                   key={`${trade.id}-${idx}`}
                   style={{ height: `${ROW_HEIGHT}px` }}
+                  suppressHydrationWarning
+                  title={`成交時間 ${formatTradeTime(trade.timestamp)}`}
                   className='grid grid-cols-3 items-center px-1 text-xs'
                 >
                   <div
                     className={cn(
                       'flex items-center gap-1 font-semibold',
-                      isBuy ? 'text-emerald-600 dark:text-emerald-400' : 'text-rose-600 dark:text-rose-400'
+                      isBuy ? 'text-emerald-700 dark:text-emerald-400' : 'text-rose-700 dark:text-rose-400'
                     )}
                   >
                     {isBuy ? (
@@ -183,12 +206,7 @@ export const RecentTrades = ({
                     {trade.size.toFixed(4)}
                   </span>
 
-                  <span
-                    suppressHydrationWarning
-                    className='text-right text-[11px] text-zinc-400 dark:text-zinc-500'
-                  >
-                    {formatTradeTime(trade.timestamp)}
-                  </span>
+                  <SourceTag trade={trade} />
                 </div>
               )
             })}

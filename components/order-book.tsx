@@ -35,7 +35,7 @@ export const OrderBook = ({
   currentTick,
   className
 }: OrderBookProps) => {
-  const { asks, bids, maxSize } = useMemo(() => {
+  const { asks, bids, maxSize, spread } = useMemo(() => {
     const rawAsks = depth?.asks?.length ? depth.asks.slice(0, DISPLAY_LEVELS) : INITIAL_ASKS
     const rawBids = depth?.bids?.length ? depth.bids.slice(0, DISPLAY_LEVELS) : INITIAL_BIDS
 
@@ -52,10 +52,15 @@ export const OrderBook = ({
       if (sortedBids[i][1] > highestSize) highestSize = sortedBids[i][1]
     }
 
+    // 價差 = 賣一（最低賣價）− 買一（最高買價）
+    const bestAsk = Math.min(...rawAsks.map((level) => level[0]))
+    const bestBid = Math.max(...rawBids.map((level) => level[0]))
+
     return {
       asks: sortedAsks,
       bids: sortedBids,
-      maxSize: highestSize
+      maxSize: highestSize,
+      spread: Math.max(0, bestAsk - bestBid)
     }
   }, [depth])
 
@@ -68,9 +73,9 @@ export const OrderBook = ({
       className={cn('h-full', className)}
       bodyClassName='flex flex-col justify-between gap-2 pt-1'
     >
-      <div className='flex items-center justify-between text-[11px] font-medium text-zinc-400 dark:text-zinc-500 px-2 pb-1 border-b border-zinc-100 dark:border-zinc-800/80'>
-        <span>Price (USDT)</span>
-        <span>Amount (BTC)</span>
+      <div className='flex items-center justify-between text-xs font-medium text-zinc-600 dark:text-zinc-300 px-2 pb-1 border-b border-zinc-200 dark:border-zinc-700/80'>
+        <span>價格 (USDT)</span>
+        <span>數量 (BTC)</span>
       </div>
 
       {/* 賣盤 Asks (上方 5 檔) */}
@@ -86,7 +91,7 @@ export const OrderBook = ({
                 className='pointer-events-none absolute inset-y-0 right-0 bg-rose-500/12 dark:bg-rose-500/20 transition-[width] duration-150'
                 style={{ width: `${depthRatio}%` }}
               />
-              <span className='relative z-10 font-semibold text-rose-600 dark:text-rose-400'>
+              <span className='relative z-10 font-semibold text-rose-700 dark:text-rose-400'>
                 {price.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
               </span>
               <span className='relative z-10 font-medium text-zinc-700 dark:text-zinc-200'>
@@ -102,7 +107,7 @@ export const OrderBook = ({
         <div
           className={cn(
             'flex items-center gap-1 font-mono tabular-nums text-lg font-extrabold tracking-tight',
-            isBuy ? 'text-emerald-600 dark:text-emerald-400' : 'text-rose-600 dark:text-rose-400'
+            isBuy ? 'text-emerald-700 dark:text-emerald-400' : 'text-rose-700 dark:text-rose-400'
           )}
         >
           <span>
@@ -114,8 +119,8 @@ export const OrderBook = ({
             <ArrowDown className='h-4 w-4 stroke-[2.5]' />
           )}
         </div>
-        <span className='font-mono tabular-nums text-[11px] text-zinc-400 dark:text-zinc-500'>
-          Spread 0.40
+        <span className='font-mono tabular-nums text-xs text-zinc-600 dark:text-zinc-300'>
+          價差 {spread.toFixed(2)}
         </span>
       </div>
 
@@ -132,7 +137,7 @@ export const OrderBook = ({
                 className='pointer-events-none absolute inset-y-0 right-0 bg-emerald-500/12 dark:bg-emerald-500/20 transition-[width] duration-150'
                 style={{ width: `${depthRatio}%` }}
               />
-              <span className='relative z-10 font-semibold text-emerald-600 dark:text-emerald-400'>
+              <span className='relative z-10 font-semibold text-emerald-700 dark:text-emerald-400'>
                 {price.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
               </span>
               <span className='relative z-10 font-medium text-zinc-700 dark:text-zinc-200'>

@@ -21,7 +21,7 @@ export const PanelCard = ({
   return (
     <section
       className={cn(
-        'contain-panel flex flex-col rounded-2xl border border-zinc-200/80 bg-white/95 shadow-[0_1px_3px_rgba(0,0,0,0.03)] transition-colors dark:border-zinc-800/80 dark:bg-zinc-900/90',
+        'contain-panel flex flex-col rounded-2xl border border-zinc-200/80 bg-white/95 shadow-[0_1px_3px_rgba(0,0,0,0.03)] transition-colors dark:border-zinc-700/80 dark:bg-zinc-900/90',
         className
       )}
     >

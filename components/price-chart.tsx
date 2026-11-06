@@ -21,6 +21,15 @@ import { cn } from '@/lib/utils'
 const TIMEFRAMES = ['1m', '5m', '15m', '1h', '4h', '1D'] as const
 type Timeframe = (typeof TIMEFRAMES)[number]
 
+const TIMEFRAME_LABELS: Record<Timeframe, string> = {
+  '1m': '1分',
+  '5m': '5分',
+  '15m': '15分',
+  '1h': '1時',
+  '4h': '4時',
+  '1D': '1日'
+}
+
 /**
  * 每個時間區間：bucketSec 為每個資料點聚合的秒數，windowSec 為畫面可視的時間長度
  * 讓每個區間畫面上都維持約 60 ~ 300 個點
@@ -108,7 +117,7 @@ const bucketize = (history: SecondPoint[], bucketSec: number): AreaData<UTCTimes
 const getChartThemeOptions = (isDark: boolean) => ({
   layout: {
     background: { type: ColorType.Solid, color: 'transparent' },
-    textColor: isDark ? '#a1a1aa' : '#71717a',
+    textColor: isDark ? '#d4d4d8' : '#3f3f46',
     fontFamily: 'var(--font-geist-mono), ui-monospace, monospace',
     fontSize: 11,
     attributionLogo: false
@@ -279,7 +288,7 @@ export const PriceChart = ({
       className={cn('min-h-[460px]', className)}
       bodyClassName='flex flex-col pt-3'
     >
-      <div className='flex flex-wrap items-center justify-between gap-4 pb-3 border-b border-zinc-100 dark:border-zinc-800/80'>
+      <div className='flex flex-wrap items-center justify-between gap-4 pb-3 border-b border-zinc-200 dark:border-zinc-700/80'>
         <div className='flex items-center gap-4'>
           <div className='flex items-center gap-2.5'>
             <div className='flex h-8 w-8 items-center justify-center rounded-full bg-amber-500 text-white font-bold text-sm shadow-xs'>
@@ -298,14 +307,14 @@ export const PriceChart = ({
               <span
                 className={cn(
                   'font-mono tabular-nums text-xs font-semibold',
-                  isPositive ? 'text-emerald-600 dark:text-emerald-400' : 'text-rose-600 dark:text-rose-400'
+                  isPositive ? 'text-emerald-700 dark:text-emerald-400' : 'text-rose-700 dark:text-rose-400'
                 )}
               >
-                {isPositive ? '+' : ''}
+                24 小時 {isPositive ? '+' : ''}
                 {priceChangePercent.toFixed(2)}%
               </span>
             </div>
-            <span className='font-mono tabular-nums text-[11px] text-zinc-400 dark:text-zinc-500'>
+            <span className='font-mono tabular-nums text-xs text-zinc-600 dark:text-zinc-300'>
               ≈ ${displayPrice.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
             </span>
           </div>
@@ -323,10 +332,10 @@ export const PriceChart = ({
                   'px-2.5 py-1 text-xs font-mono font-medium rounded-md transition-all cursor-pointer',
                   active
                     ? 'bg-white text-zinc-900 shadow-xs dark:bg-zinc-900 dark:text-zinc-100'
-                    : 'text-zinc-500 hover:text-zinc-800 dark:text-zinc-400 dark:hover:text-zinc-200'
+                    : 'text-zinc-600 hover:text-zinc-800 dark:text-zinc-300 dark:hover:text-zinc-200'
                 )}
               >
-                {tf}
+                {TIMEFRAME_LABELS[tf]}
               </button>
             )
           })}

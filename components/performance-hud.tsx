@@ -68,6 +68,10 @@ const Sparkline = ({
   )
 }
 
+const StatusLine = ({ children }: { children: React.ReactNode }) => (
+  <div className='text-[11px] text-zinc-600 dark:text-zinc-300 whitespace-nowrap'>{children}</div>
+)
+
 export interface PerformanceHUDProps {
   /** 主執行緒實際量測到的每秒 Tick 數 */
   measuredTps: number
@@ -75,8 +79,8 @@ export interface PerformanceHUDProps {
   bufferUsage: number | null
   /** Baseline 模式的主執行緒延遲（ms），Accelerated 模式傳 null */
   mainThreadLagMs?: number | null
-  /** Buffer 卡片下方的策略統計文字 */
-  bufferDetail?: string
+  /** 使用者設定的目標 TPS，用來對照實測值 */
+  targetTps?: number
   isRunning: boolean
   /** 由父層在 commit 後直接寫入 Render 次數的 span */
   renderCountRef?: RefObject<HTMLSpanElement | null>
@@ -87,7 +91,7 @@ export const PerformanceHUD = ({
   measuredTps,
   bufferUsage,
   mainThreadLagMs = null,
-  bufferDetail,
+  targetTps,
   isRunning,
   renderCountRef,
   className
@@ -105,19 +109,22 @@ export const PerformanceHUD = ({
   const isLagHigh = showLag && lagValue >= 100
 
   const isFpsLow = isRunning && hud.fps < 45
+  const fpsStatus = !isRunning ? '未執行' : hud.fps >= 55 ? '流暢' : hud.fps >= 30 ? '普通' : '卡頓'
+  const tpsStatus = targetTps !== undefined ? `目標 ${targetTps.toLocaleString()}` : ''
+  const heapStatus = hud.jsHeapMB === null ? '此瀏覽器不支援' : '目前用量'
   const isBufferHigh = hud.bufferUsage !== null && hud.bufferUsage >= 75
 
   return (
     <PanelCard
-      title='Performance'
+      title='效能監控'
       headerRight={
         renderCountRef && (
           <span
             ref={renderCountRef}
             suppressHydrationWarning
-            className='font-mono tabular-nums text-[10px] text-zinc-400 dark:text-zinc-500'
+            className='font-mono tabular-nums text-[11px] text-zinc-600 dark:text-zinc-300'
           >
-            Renders: 0
+            渲染次數：0
           </span>
         )
       }
@@ -125,21 +132,22 @@ export const PerformanceHUD = ({
       bodyClassName='flex flex-col gap-2 pt-1'
     >
       {/* 1. FPS Sparkline Row */}
-      <div className='flex items-center justify-between gap-2 rounded-xl border border-zinc-100 bg-zinc-50/50 px-3 py-2 dark:border-zinc-800/80 dark:bg-zinc-800/30'>
+      <div className='flex items-center justify-between gap-2 rounded-xl border border-zinc-200 bg-zinc-50/50 px-3 py-2 dark:border-zinc-700/80 dark:bg-zinc-800/30'>
         <div className='min-w-[78px]'>
-          <div className='text-[11px] font-medium text-zinc-400 dark:text-zinc-500'>
-            FPS
+          <div className='text-xs font-medium text-zinc-600 dark:text-zinc-300'>
+            幀率 (FPS)
           </div>
           <div
             className={cn(
               'font-mono tabular-nums text-base font-extrabold',
               isFpsLow
-                ? 'text-rose-600 dark:text-rose-400'
+                ? 'text-rose-700 dark:text-rose-400'
                 : 'text-zinc-900 dark:text-zinc-100'
             )}
           >
             {hud.fps}
           </div>
+          <StatusLine>{fpsStatus}</StatusLine>
         </div>
         <Sparkline
           data={hud.fpsHistory}
@@ -151,14 +159,15 @@ export const PerformanceHUD = ({
       </div>
 
       {/* 2. TPS Sparkline Row */}
-      <div className='flex items-center justify-between gap-2 rounded-xl border border-zinc-100 bg-zinc-50/50 px-3 py-2 dark:border-zinc-800/80 dark:bg-zinc-800/30'>
+      <div className='flex items-center justify-between gap-2 rounded-xl border border-zinc-200 bg-zinc-50/50 px-3 py-2 dark:border-zinc-700/80 dark:bg-zinc-800/30'>
         <div className='min-w-[78px]'>
-          <div className='text-[11px] font-medium text-zinc-400 dark:text-zinc-500'>
-            TPS
+          <div className='text-xs font-medium text-zinc-600 dark:text-zinc-300'>
+            每秒成交 (TPS)
           </div>
           <div className='font-mono tabular-nums text-base font-extrabold text-zinc-900 dark:text-zinc-100'>
             {hud.tps.toLocaleString()}
           </div>
+          {tpsStatus && <StatusLine>{tpsStatus}</StatusLine>}
         </div>
         <Sparkline
           data={hud.tpsHistory}
@@ -169,14 +178,15 @@ export const PerformanceHUD = ({
       </div>
 
       {/* 3. JS Heap Sparkline Row */}
-      <div className='flex items-center justify-between gap-2 rounded-xl border border-zinc-100 bg-zinc-50/50 px-3 py-2 dark:border-zinc-800/80 dark:bg-zinc-800/30'>
+      <div className='flex items-center justify-between gap-2 rounded-xl border border-zinc-200 bg-zinc-50/50 px-3 py-2 dark:border-zinc-700/80 dark:bg-zinc-800/30'>
         <div className='min-w-[78px]'>
-          <div className='text-[11px] font-medium text-zinc-400 dark:text-zinc-500'>
-            JS Heap
+          <div className='text-xs font-medium text-zinc-600 dark:text-zinc-300'>
+            JS 記憶體 (JS Heap)
           </div>
           <div className='font-mono tabular-nums text-base font-extrabold text-zinc-900 dark:text-zinc-100'>
             {hud.jsHeapMB !== null ? `${hud.jsHeapMB.toFixed(1)}MB` : 'N/A'}
           </div>
+          <StatusLine>{heapStatus}</StatusLine>
         </div>
         <Sparkline
           data={hud.heapHistory}
@@ -186,16 +196,16 @@ export const PerformanceHUD = ({
       </div>
 
       {/* 4. Buffer Usage（Accelerated）/ Main Thread Lag（Baseline）Sparkline Row */}
-      <div className='flex items-center justify-between gap-2 rounded-xl border border-zinc-100 bg-zinc-50/50 px-3 py-2 dark:border-zinc-800/80 dark:bg-zinc-800/30'>
+      <div className='flex items-center justify-between gap-2 rounded-xl border border-zinc-200 bg-zinc-50/50 px-3 py-2 dark:border-zinc-700/80 dark:bg-zinc-800/30'>
         <div className='min-w-[78px]'>
-          <div className='text-[11px] font-medium text-zinc-400 dark:text-zinc-500'>
-            {showLag ? 'Main Thread Lag' : 'Buffer Usage'}
+          <div className='text-xs font-medium text-zinc-600 dark:text-zinc-300'>
+            {showLag ? '主執行緒延遲 (Main Thread Lag)' : '緩衝區使用率'}
           </div>
           <div
             className={cn(
               'font-mono tabular-nums text-base font-extrabold',
               (showLag ? isLagHigh : isBufferHigh)
-                ? 'text-rose-600 dark:text-rose-400'
+                ? 'text-rose-700 dark:text-rose-400'
                 : 'text-zinc-900 dark:text-zinc-100'
             )}
           >
@@ -203,11 +213,11 @@ export const PerformanceHUD = ({
               ? `${lagValue.toLocaleString()}ms`
               : hud.bufferUsage !== null ? `${hud.bufferUsage.toFixed(1)}%` : 'N/A'}
           </div>
-          {!showLag && bufferDetail && (
-            <div className='font-mono tabular-nums text-[10px] text-zinc-400 dark:text-zinc-500 whitespace-nowrap'>
-              {bufferDetail}
-            </div>
-          )}
+          <StatusLine>
+            {showLag
+              ? lagValue < 100 ? '即時' : lagValue < 1000 ? '開始延遲' : '嚴重延遲'
+              : hud.bufferUsage === null ? '—' : hud.bufferUsage < 50 ? '健康' : hud.bufferUsage < 80 ? '偏高' : '快滿了'}
+          </StatusLine>
         </div>
         {showLag ? (
           <Sparkline

@@ -40,7 +40,25 @@ export interface WorkerStreamState {
   }
 }
 
+/**
+ * 給 1 秒取樣器讀取的即時統計（累計值），讀取後會重設「最長畫面間隔」
+ */
+export interface FrameStats {
+  fps: number
+  /** 累計已送到畫面上的 Tick 數 */
+  renderedTicks: number
+  /** 累計被策略合併（coalesce）或丟棄（drop）的 Tick 數 */
+  strategyDiscarded: number
+  /** 累計因 Ring Buffer 滿載被覆蓋的 Tick 數 */
+  overwritten: number
+  queueSize: number
+  bufferUsage: number
+  /** 上次讀取以來最長的兩幀間隔（ms），代表主執行緒最長停頓 */
+  maxFrameGapMs: number
+}
+
 export interface UseWorkerStreamReturn extends WorkerStreamState {
+  readFrameStats: () => FrameStats
   start: (batchIntervalMs?: number) => void
   stop: () => void
   reset: () => void
@@ -48,7 +66,6 @@ export interface UseWorkerStreamReturn extends WorkerStreamState {
   ingestTick: (tick: TradeTick) => void
   ingestBinary: (buffer: ArrayBuffer, count: number) => void
   ingestDepth: (depth: OrderBookDepth) => void
-  burstInject: (count: number, basePrice?: number) => void
 }
 
 export const useWorkerStream = (): UseWorkerStreamReturn => {
@@ -63,6 +80,9 @@ export const useWorkerStream = (): UseWorkerStreamReturn => {
   const strategyRef = useRef<BackpressureStrategy>('coalesce')
   const statusRef = useRef<'idle' | 'running' | 'stopped'>('idle')
   const coalescedCountRef = useRef(0)
+  const renderedTicksRef = useRef(0)
+  const lastFrameTimeRef = useRef(0)
+  const maxFrameGapRef = useRef(0)
 
   const [status, setStatus] = useState<'idle' | 'running' | 'stopped'>('idle')
   const [strategy, setStrategyState] = useState<BackpressureStrategy>('coalesce')
@@ -96,6 +116,11 @@ export const useWorkerStream = (): UseWorkerStreamReturn => {
 
     const renderFrame = (now: number) => {
       frameCountRef.current++
+      if (lastFrameTimeRef.current > 0) {
+        const gap = now - lastFrameTimeRef.current
+        if (gap > maxFrameGapRef.current) maxFrameGapRef.current = gap
+      }
+      lastFrameTimeRef.current = now
       const fpsElapsed = now - lastFpsSampleTimeRef.current
 
       if (fpsElapsed >= 1000) {
@@ -111,6 +136,7 @@ export const useWorkerStream = (): UseWorkerStreamReturn => {
           MAX_TICKS_PER_FRAME
         )
         coalescedCountRef.current += batchResult.discardedOrMergedCount
+        renderedTicksRef.current += batchResult.ticks.length
         setLatestTicks(batchResult.ticks)
       }
 
@@ -224,6 +250,21 @@ export const useWorkerStream = (): UseWorkerStreamReturn => {
     }
   }, [])
 
+  const readFrameStats = useCallback((): FrameStats => {
+    const ringBuffer = ringBufferRef.current
+    const stats: FrameStats = {
+      fps: currentFpsRef.current,
+      renderedTicks: renderedTicksRef.current,
+      strategyDiscarded: coalescedCountRef.current,
+      overwritten: ringBuffer.dropped,
+      queueSize: ringBuffer.size,
+      bufferUsage: ringBuffer.getUsageRatio(),
+      maxFrameGapMs: Math.round(maxFrameGapRef.current)
+    }
+    maxFrameGapRef.current = 0
+    return stats
+  }, [])
+
   const sendCommand = useCallback((cmd: StreamCommand) => {
     if (workerRef.current) {
       workerRef.current.postMessage(cmd)
@@ -276,33 +317,9 @@ export const useWorkerStream = (): UseWorkerStreamReturn => {
     sendCommand({ type: 'INGEST_DEPTH', payload: depth })
   }, [sendCommand])
 
-  const burstInject = useCallback((count: number, basePrice = 67432.18) => {
-    const ringBuffer = ringBufferRef.current
-    const now = Date.now()
-
-    for (let i = 0; i < count; i++) {
-      const jitter = (Math.random() - 0.5) * 20
-      ringBuffer.push({
-        id: `burst_${now}_${i}`,
-        price: Number((basePrice + jitter).toFixed(2)),
-        size: Number((Math.random() * 1.5 + 0.01).toFixed(4)),
-        side: Math.random() > 0.5 ? 'buy' : 'sell',
-        timestamp: now + i
-      })
-    }
-
-    const usage = ringBuffer.getUsageRatio()
-    setMetrics((prev) => ({
-      ...prev,
-      queueSize: ringBuffer.size,
-      bufferUsage: usage,
-      droppedTicks: ringBuffer.dropped,
-      coalescedTicks: coalescedCountRef.current,
-      watermarkStatus: getWatermarkStatus(usage)
-    }))
-  }, [])
 
   return {
+    readFrameStats,
     status,
     strategy,
     latestTicks,
@@ -314,7 +331,6 @@ export const useWorkerStream = (): UseWorkerStreamReturn => {
     setStrategy,
     ingestTick,
     ingestBinary,
-    ingestDepth,
-    burstInject
+    ingestDepth
   }
 }
