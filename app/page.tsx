@@ -6,6 +6,7 @@ import type { TradeTick, OrderBookDepth } from '@/lib/type'
 import type { BackpressureStrategy } from '@/lib/coalescing-strategies'
 import { TpsController } from '@/components/tps-controller'
 import { PriceChart } from '@/components/price-chart'
+import { OrderBook } from '@/components/order-book'
 import { runBenchmark, type BenchmarkResult } from '@/lib/benchmark-runner'
 import { runQueueBenchmark, type QueueBenchmarkResult } from '@/lib/queue-benchmark'
 import { useWorkerStream } from '@/hooks/useWorkerStream'
@@ -47,6 +48,7 @@ export default function NaivePage() {
     status: streamStatus,
     strategy,
     latestTicks,
+    latestDepth,
     metrics,
     start: startStream,
     stop: stopStream,
@@ -450,36 +452,11 @@ export default function NaivePage() {
             )}
           </div>
 
-          <div className='rounded-xl border border-zinc-200 bg-white p-6 shadow-xs dark:border-zinc-800 dark:bg-zinc-950'>
-            <div className='text-xs font-semibold text-zinc-400 uppercase tracking-wider mb-2'>
-              Order Book (10 Levels)
-            </div>
-            {currentDepth ? (
-              <div className='font-mono text-xs space-y-2'>
-                <div className='text-rose-500 space-y-1'>
-                  <div className='text-[10px] text-zinc-400 font-sans'>賣盤 (Asks 最低 3 檔)</div>
-                  {currentDepth.asks.slice(0, 3).map(([price, size], i) => (
-                    <div key={i} className='flex justify-between'>
-                      <span>${price.toFixed(2)}</span>
-                      <span className='text-zinc-500'>{size.toFixed(4)} BTC</span>
-                    </div>
-                  ))}
-                </div>
-                <div className='border-t border-dashed border-zinc-200 my-2 dark:border-zinc-800' />
-                <div className='text-emerald-500 space-y-1'>
-                  <div className='text-[10px] text-zinc-400 font-sans'>買盤 (Bids 最高 3 檔)</div>
-                  {currentDepth.bids.slice(0, 3).map(([price, size], i) => (
-                    <div key={i} className='flex justify-between'>
-                      <span>${price.toFixed(2)}</span>
-                      <span className='text-zinc-500'>{size.toFixed(4)} BTC</span>
-                    </div>
-                  ))}
-                </div>
-              </div>
-            ) : (
-              <div className='py-8 text-center text-sm text-zinc-400'>尚未生成盤口</div>
-            )}
-          </div>
+          {/* 5-C 高資訊密度深度盤口階梯元件 */}
+          <OrderBook
+            depth={latestDepth ?? currentDepth}
+            currentTick={currentTick}
+          />
         </div>
 
         <div className='max-w-md mx-auto'>
