@@ -1,7 +1,6 @@
 'use client'
 
 import { useState, useEffect, useRef } from 'react'
-import type { PipelineMode } from '@/components/ab-mode-switch'
 
 const SPARKLINE_POINTS = 24
 const SAMPLE_INTERVAL_MS = 250
@@ -19,51 +18,41 @@ interface ExtendedPerformance extends Performance {
 export interface HudTelemetrySnapshot {
   fps: number
   tps: number
-  jsHeapMB: number
-  bufferUsage: number
+  /** null 表示瀏覽器不支援 performance.memory（非 Chromium） */
+  jsHeapMB: number | null
+  /** null 表示目前管線沒有 Ring Buffer（Baseline 模式） */
+  bufferUsage: number | null
+  /** null 表示目前不是 Baseline 模式 */
+  mainThreadLagMs: number | null
   fpsHistory: number[]
   tpsHistory: number[]
   heapHistory: number[]
   bufferHistory: number[]
+  lagHistory: number[]
 }
 
 export interface UsePerformanceHUDInput {
-  currentTps: number
-  bufferUsage: number
+  /** 主執行緒實際量測到的每秒 Tick 數 */
+  measuredTps: number
+  /** Ring Buffer 實際使用率（%），沒有 Ring Buffer 時傳 null */
+  bufferUsage: number | null
+  /** Baseline 主執行緒延遲（ms），非 Baseline 傳 null */
+  mainThreadLagMs: number | null
   isRunning: boolean
-  mode: PipelineMode
 }
 
-const INITIAL_FPS_HISTORY = [
-  58, 59, 60, 60, 59, 60, 60, 59, 60, 60, 59, 60,
-  60, 59, 60, 60, 59, 60, 60, 59, 60, 59, 60, 60
-]
+const emptyHistory = (): number[] => new Array<number>(SPARKLINE_POINTS).fill(0)
 
-const INITIAL_TPS_HISTORY = [
-  920, 980, 1050, 1010, 990, 1120, 1080, 1040, 1150, 1090, 1180, 1140,
-  1110, 1210, 1160, 1190, 1240, 1180, 1220, 1200, 1260, 1210, 1235, 1248
-]
-
-const INITIAL_HEAP_HISTORY = [
-  42.1, 42.6, 43.0, 43.4, 43.8, 44.1, 44.5, 44.9, 45.2, 45.6, 45.9, 46.1,
-  46.4, 46.8, 47.0, 47.2, 47.5, 47.7, 47.9, 48.1, 48.3, 48.4, 48.6, 48.7
-]
-
-const INITIAL_BUFFER_HISTORY = [
-  12.0, 14.5, 15.2, 16.8, 18.0, 19.4, 21.0, 20.5, 22.1, 23.4, 24.8, 25.2,
-  26.5, 27.1, 28.0, 28.9, 29.5, 30.2, 30.8, 31.2, 31.6, 31.9, 32.1, 32.4
-]
-
-const readJsHeapMB = (fallbackBase: number, mode: PipelineMode, targetTps: number): number => {
-  if (typeof performance !== 'undefined') {
-    const perf = performance as ExtendedPerformance
-    if (perf.memory && perf.memory.usedJSHeapSize > 0) {
-      return Number((perf.memory.usedJSHeapSize / (1024 * 1024)).toFixed(1))
-    }
+/**
+ * 讀取真實 JS Heap 用量；不支援 performance.memory 的瀏覽器回傳 null，不做任何模擬。
+ */
+const readJsHeapMB = (): number | null => {
+  if (typeof performance === 'undefined') return null
+  const perf = performance as ExtendedPerformance
+  if (perf.memory && perf.memory.usedJSHeapSize > 0) {
+    return Number((perf.memory.usedJSHeapSize / (1024 * 1024)).toFixed(1))
   }
-  const growth = mode === 'baseline' ? (targetTps / 1000) * 1.8 : (Math.random() - 0.48) * 0.3
-  const next = fallbackBase + growth
-  return Number(Math.max(36, Math.min(240, next > 180 && mode === 'baseline' ? 65 : next)).toFixed(1))
+  return null
 }
 
 const pushRolling = (arr: number[], nextVal: number): number[] => {
@@ -73,30 +62,32 @@ const pushRolling = (arr: number[], nextVal: number): number[] => {
 }
 
 export const usePerformanceHUD = ({
-  currentTps,
+  measuredTps,
   bufferUsage,
-  isRunning,
-  mode
+  mainThreadLagMs,
+  isRunning
 }: UsePerformanceHUDInput): HudTelemetrySnapshot => {
-  const [snapshot, setSnapshot] = useState<HudTelemetrySnapshot>({
-    fps: 60,
-    tps: 1000,
-    jsHeapMB: 48.7,
-    bufferUsage: 14.2,
-    fpsHistory: INITIAL_FPS_HISTORY,
-    tpsHistory: INITIAL_TPS_HISTORY,
-    heapHistory: INITIAL_HEAP_HISTORY,
-    bufferHistory: INITIAL_BUFFER_HISTORY
-  })
+  const [snapshot, setSnapshot] = useState<HudTelemetrySnapshot>(() => ({
+    fps: 0,
+    tps: 0,
+    jsHeapMB: null,
+    bufferUsage: null,
+    mainThreadLagMs: null,
+    fpsHistory: emptyHistory(),
+    tpsHistory: emptyHistory(),
+    heapHistory: emptyHistory(),
+    bufferHistory: emptyHistory(),
+    lagHistory: emptyHistory()
+  }))
 
   const frameCountRef = useRef(0)
   const lastRafTimeRef = useRef(0)
-  const measuredFpsRef = useRef(60)
-  const latestInputRef = useRef({ currentTps, bufferUsage, mode })
+  const measuredFpsRef = useRef(0)
+  const latestInputRef = useRef({ measuredTps, bufferUsage, mainThreadLagMs })
 
   useEffect(() => {
-    latestInputRef.current = { currentTps, bufferUsage, mode }
-  }, [currentTps, bufferUsage, mode])
+    latestInputRef.current = { measuredTps, bufferUsage, mainThreadLagMs }
+  }, [measuredTps, bufferUsage, mainThreadLagMs])
 
   useEffect(() => {
     if (typeof window === 'undefined' || !isRunning) return
@@ -109,9 +100,9 @@ export const usePerformanceHUD = ({
       frameCountRef.current++
       const elapsed = now - lastRafTimeRef.current
       if (elapsed >= 250) {
-        measuredFpsRef.current = Math.min(
-          60,
-          Math.max(1, Math.round((frameCountRef.current * 1000) / elapsed))
+        measuredFpsRef.current = Math.max(
+          1,
+          Math.round((frameCountRef.current * 1000) / elapsed)
         )
         frameCountRef.current = 0
         lastRafTimeRef.current = now
@@ -122,31 +113,23 @@ export const usePerformanceHUD = ({
     rafId = window.requestAnimationFrame(trackFps)
 
     const timer = window.setInterval(() => {
-      const { currentTps: targetTps, bufferUsage: buf, mode: activeMode } = latestInputRef.current
+      const { measuredTps: tps, bufferUsage: buf, mainThreadLagMs: lag } = latestInputRef.current
 
       setSnapshot((prev) => {
         const nextFps = measuredFpsRef.current
-        const tpsJitter = Math.round((Math.random() - 0.48) * targetTps * 0.06)
-        const nextTps = Math.max(1, targetTps + tpsJitter)
-        const nextHeap = readJsHeapMB(prev.jsHeapMB, activeMode, targetTps)
-
-        // Accelerated 模式下受惠於 RingBuffer + Coalesce，水位保持健康低檔；Baseline 則呈現主執行緒排隊阻塞負載
-        const nextBuf =
-          activeMode === 'accelerated'
-            ? buf > 0
-              ? buf
-              : Number((Math.min(35, (targetTps / 2000) * 18 + Math.random() * 2.5)).toFixed(1))
-            : Number((Math.min(99.4, (targetTps / 1000) * 62 + Math.random() * 8)).toFixed(1))
+        const nextHeap = readJsHeapMB()
 
         return {
           fps: nextFps,
-          tps: nextTps,
+          tps,
           jsHeapMB: nextHeap,
-          bufferUsage: nextBuf,
+          bufferUsage: buf,
+          mainThreadLagMs: lag,
           fpsHistory: pushRolling(prev.fpsHistory, nextFps),
-          tpsHistory: pushRolling(prev.tpsHistory, nextTps),
-          heapHistory: pushRolling(prev.heapHistory, nextHeap),
-          bufferHistory: pushRolling(prev.bufferHistory, nextBuf)
+          tpsHistory: pushRolling(prev.tpsHistory, tps),
+          heapHistory: pushRolling(prev.heapHistory, nextHeap ?? 0),
+          bufferHistory: pushRolling(prev.bufferHistory, buf ?? 0),
+          lagHistory: pushRolling(prev.lagHistory, lag ?? 0)
         }
       })
     }, SAMPLE_INTERVAL_MS)

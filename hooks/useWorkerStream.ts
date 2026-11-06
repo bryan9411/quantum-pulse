@@ -46,6 +46,7 @@ export interface UseWorkerStreamReturn extends WorkerStreamState {
   reset: () => void
   setStrategy: (strategy: BackpressureStrategy) => void
   ingestTick: (tick: TradeTick) => void
+  ingestBinary: (buffer: ArrayBuffer, count: number) => void
   ingestDepth: (depth: OrderBookDepth) => void
   burstInject: (count: number, basePrice?: number) => void
 }
@@ -263,6 +264,14 @@ export const useWorkerStream = (): UseWorkerStreamReturn => {
     sendCommand({ type: 'INGEST_TICK', payload: tick })
   }, [sendCommand])
 
+  const ingestBinary = useCallback((buffer: ArrayBuffer, count: number) => {
+    // 以 Transferable 轉交，主執行緒不解碼、不複製
+    workerRef.current?.postMessage(
+      { type: 'INGEST_BINARY', payload: { buffer, count } } satisfies StreamCommand,
+      [buffer]
+    )
+  }, [])
+
   const ingestDepth = useCallback((depth: OrderBookDepth) => {
     sendCommand({ type: 'INGEST_DEPTH', payload: depth })
   }, [sendCommand])
@@ -304,6 +313,7 @@ export const useWorkerStream = (): UseWorkerStreamReturn => {
     reset,
     setStrategy,
     ingestTick,
+    ingestBinary,
     ingestDepth,
     burstInject
   }

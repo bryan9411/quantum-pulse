@@ -2,7 +2,7 @@ export type OrderSide = 'buy' | 'sell';
 export type OrderBookLevel = [price: number, size: number]
 
 export type ConnectionStatus = 'connecting' | 'connected' | 'disconnected' | 'error'
-export type DataSourceEventType = 'tick' | 'depth' | 'status' | 'metrics';
+export type DataSourceEventType = 'tick' | 'tickBatch' | 'depth' | 'status' | 'metrics';
 
 
 /**
@@ -56,8 +56,17 @@ export interface TelemetryMetrics {
 	latencyMs: number
 }
 
+/**
+ * 二進位批次成交：Float64Array 佈局見 lib/binary-protocol.ts（每筆 TICK_STRIDE 個欄位）
+ */
+export interface TickBatchPayload {
+  buffer: ArrayBuffer
+  count: number
+}
+
 export type DataSourcePayloadMap = {
   tick: TradeTick
+  tickBatch: TickBatchPayload
   depth: OrderBookDepth
   status: { status: ConnectionStatus, message?: string }
   metrics: TelemetryMetrics

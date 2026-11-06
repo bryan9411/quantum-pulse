@@ -14,22 +14,40 @@ export interface TpsControllerProps {
 }
 
 const TPS_PRESETS = [
-  { label: '10', value: 10 },
   { label: '100', value: 100 },
-  { label: '1000', value: 1000 },
-  { label: '2000', value: 2000 }
+  { label: '1K', value: 1000 },
+  { label: '10K', value: 10000 },
+  { label: '50K', value: 50000 }
 ] as const
+
+// 對數刻度滑桿：讓 10 ~ 50,000 在整條軌道上平均分布
+const SLIDER_STEPS = 1000
+
+const tpsToSlider = (tps: number, min: number, max: number): number => {
+  const lo = Math.log10(min)
+  const hi = Math.log10(max)
+  return Math.round(((Math.log10(Math.max(min, tps)) - lo) / (hi - lo)) * SLIDER_STEPS)
+}
+
+const sliderToTps = (pos: number, min: number, max: number): number => {
+  const lo = Math.log10(min)
+  const hi = Math.log10(max)
+  const raw = Math.pow(10, lo + (pos / SLIDER_STEPS) * (hi - lo))
+  // 取兩位有效數字，避免出現 12,347 這種難讀的數字
+  const magnitude = Math.pow(10, Math.max(0, Math.floor(Math.log10(raw)) - 1))
+  return Math.min(max, Math.max(min, Math.round(raw / magnitude) * magnitude))
+}
 
 export const TpsController = ({
   currentTps,
   isRunning,
   onTpsChange,
   onToggle,
-  min = 1,
-  max = 2000
+  min = 10,
+  max = 50000
 }: TpsControllerProps) => {
   const handleSliderChange = (e: React.ChangeEvent<HTMLInputElement>) => {
-    onTpsChange(Number(e.target.value))
+    onTpsChange(sliderToTps(Number(e.target.value), min, max))
   }
 
   const handleToggle = () => {
@@ -70,9 +88,10 @@ export const TpsController = ({
       <div className='flex items-center py-1'>
         <input
           type='range'
-          min={min}
-          max={max}
-          value={currentTps}
+          min={0}
+          max={SLIDER_STEPS}
+          value={tpsToSlider(currentTps, min, max)}
+          aria-label='TPS'
           onChange={handleSliderChange}
           className='h-1.5 w-full cursor-pointer appearance-none rounded-lg bg-zinc-200 accent-sky-500 dark:bg-zinc-800 dark:accent-sky-400'
         />

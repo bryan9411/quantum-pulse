@@ -1,5 +1,5 @@
 /** @type {import('cz-git').UserConfig} */
-export default {
+const config = {
   extends: ['@commitlint/config-conventional'],
   prompt: {
     alias: { fd: 'docs: fix typos' },
@@ -59,3 +59,5 @@ export default {
     defaultSubject: '',
   },
 };
+
+export default config

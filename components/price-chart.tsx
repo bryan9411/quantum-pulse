@@ -21,8 +21,31 @@ import { cn } from '@/lib/utils'
 const TIMEFRAMES = ['1m', '5m', '15m', '1h', '4h', '1D'] as const
 type Timeframe = (typeof TIMEFRAMES)[number]
 
+/**
+ * 每個時間區間：bucketSec 為每個資料點聚合的秒數，windowSec 為畫面可視的時間長度
+ * 讓每個區間畫面上都維持約 60 ~ 300 個點
+ */
+const TIMEFRAME_CONFIG: Record<Timeframe, { bucketSec: number; windowSec: number }> = {
+  '1m': { bucketSec: 1, windowSec: 60 },
+  '5m': { bucketSec: 1, windowSec: 300 },
+  '15m': { bucketSec: 5, windowSec: 900 },
+  '1h': { bucketSec: 15, windowSec: 3600 },
+  '4h': { bucketSec: 60, windowSec: 14400 },
+  '1D': { bucketSec: 300, windowSec: 86400 }
+}
+
 const BASE_SEED_PRICE = 67432.18
-const INITIAL_POINTS_COUNT = 80
+// 種子走勢的起點價（24 小時前），固定常數讓 SSR 與 Client 計算出相同的漲跌幅
+const SEED_OPEN_PRICE = Number((BASE_SEED_PRICE - 420).toFixed(2))
+const SEED_HISTORY_SEC = 86400
+// 種子歷史的每秒波動（相對價格），24 小時約 ±6%
+const SEED_VOLATILITY_PER_SEC = 0.0002
+const MAX_HISTORY_SEC = SEED_HISTORY_SEC + 3600
+
+interface SecondPoint {
+  time: number
+  value: number
+}
 
 export interface PriceChartProps {
   latestTicks: TradeTick[]
@@ -30,27 +53,56 @@ export interface PriceChartProps {
   className?: string
 }
 
-const generateInitialSeriesData = (
-  count = INITIAL_POINTS_COUNT,
-  endPrice = BASE_SEED_PRICE
-): AreaData<UTCTimestamp>[] => {
+/**
+ * 以 Brownian Bridge 產生 24 小時、每秒一點的種子歷史：
+ * 隨機漫步後線性校正，讓起點精準等於 SEED_OPEN_PRICE、終點精準等於 BASE_SEED_PRICE
+ */
+const generateSeedHistory = (): SecondPoint[] => {
   const nowSec = Math.floor(Date.now() / 1000)
-  const points: AreaData<UTCTimestamp>[] = new Array(count)
-  let current = endPrice - 420
-
-  for (let i = 0; i < count; i++) {
-    const time = (nowSec - (count - 1 - i)) as UTCTimestamp
-    if (i === count - 1) {
-      current = endPrice
-    } else {
-      const drift = (endPrice - current) / (count - i)
-      const noise = (Math.random() - 0.48) * 18
-      current = Number((current + drift + noise).toFixed(2))
-    }
-    points[i] = { time, value: current }
+  const n = SEED_HISTORY_SEC
+  const walk = new Float64Array(n)
+  let logPrice = 0
+  for (let i = 1; i < n; i++) {
+    const u1 = Math.random() || Number.MIN_VALUE
+    const u2 = Math.random()
+    const z = Math.sqrt(-2 * Math.log(u1)) * Math.cos(2 * Math.PI * u2)
+    logPrice += SEED_VOLATILITY_PER_SEC * z
+    walk[i] = logPrice
   }
 
+  const startLog = Math.log(SEED_OPEN_PRICE)
+  const endLog = Math.log(BASE_SEED_PRICE)
+  const drift = walk[n - 1]
+  const points: SecondPoint[] = new Array(n)
+  for (let i = 0; i < n; i++) {
+    const t = i / (n - 1)
+    const bridged = startLog + (endLog - startLog) * t + walk[i] - drift * t
+    points[i] = {
+      time: nowSec - (n - 1 - i),
+      value: Number(Math.exp(bridged).toFixed(2))
+    }
+  }
   return points
+}
+
+/**
+ * 將每秒歷史依 bucketSec 聚合（取每個區間最後一筆價格）
+ */
+const bucketize = (history: SecondPoint[], bucketSec: number): AreaData<UTCTimestamp>[] => {
+  if (bucketSec <= 1) {
+    return history.map((p) => ({ time: p.time as UTCTimestamp, value: p.value }))
+  }
+  const out: AreaData<UTCTimestamp>[] = []
+  for (const p of history) {
+    const bucketTime = Math.floor(p.time / bucketSec) * bucketSec
+    const last = out[out.length - 1]
+    if (last && last.time === bucketTime) {
+      last.value = p.value
+    } else {
+      out.push({ time: bucketTime as UTCTimestamp, value: p.value })
+    }
+  }
+  return out
 }
 
 const getChartThemeOptions = (isDark: boolean) => ({
@@ -72,7 +124,6 @@ const getChartThemeOptions = (isDark: boolean) => ({
   timeScale: {
     borderColor: isDark ? '#27272a' : '#e4e4e7',
     timeVisible: true,
-    secondsVisible: true,
     rightOffset: 3
   }
 })
@@ -86,8 +137,30 @@ export const PriceChart = ({
   const containerRef = useRef<HTMLDivElement | null>(null)
   const chartRef = useRef<IChartApi | null>(null)
   const seriesRef = useRef<ISeriesApi<'Area'> | null>(null)
-  const lastTimeSecRef = useRef<number>(0)
-  const openPriceRef = useRef<number>(65890.5)
+  const historyRef = useRef<SecondPoint[]>([])
+  const bucketSecRef = useRef(TIMEFRAME_CONFIG['1m'].bucketSec)
+
+  /**
+   * 以指定時間區間重建整條資料序列並調整可視範圍
+   */
+  const applyTimeframe = (tf: Timeframe) => {
+    const chart = chartRef.current
+    const series = seriesRef.current
+    if (!chart || !series) return
+
+    const { bucketSec, windowSec } = TIMEFRAME_CONFIG[tf]
+    bucketSecRef.current = bucketSec
+
+    const data = bucketize(historyRef.current, bucketSec)
+    series.setData(data)
+
+    chart.applyOptions({ timeScale: { secondsVisible: bucketSec < 60 } })
+    const visibleBars = Math.ceil(windowSec / bucketSec)
+    chart.timeScale().setVisibleLogicalRange({
+      from: Math.max(0, data.length - visibleBars),
+      to: data.length - 1 + 3
+    })
+  }
 
   useEffect(() => {
     const container = containerRef.current
@@ -130,18 +203,12 @@ export const PriceChart = ({
       lastPriceAnimation: LastPriceAnimationMode.Continuous
     })
 
-    const seedData = generateInitialSeriesData(INITIAL_POINTS_COUNT, BASE_SEED_PRICE)
-    areaSeries.setData(seedData)
-
-    if (seedData.length > 0) {
-      lastTimeSecRef.current = Number(seedData[seedData.length - 1].time)
-      openPriceRef.current = seedData[0].value
-    }
-
-    chart.timeScale().fitContent()
-
     chartRef.current = chart
     seriesRef.current = areaSeries
+
+    if (historyRef.current.length === 0) {
+      historyRef.current = generateSeedHistory()
+    }
 
     const resizeObserver = new ResizeObserver((entries) => {
       const entry = entries[0]
@@ -172,24 +239,39 @@ export const PriceChart = ({
     }
   }, [])
 
+  // 時間區間切換（含首次掛載）：重新聚合歷史並設定可視範圍
+  useEffect(() => {
+    applyTimeframe(timeframe)
+  }, [timeframe])
+
   useEffect(() => {
     const series = seriesRef.current
     if (!series || latestTicks.length === 0) return
 
+    const history = historyRef.current
     const lastTick = latestTicks[latestTicks.length - 1]
-    const tickTimeSec = Math.floor(lastTick.timestamp / 1000)
-    const safeTimeSec = Math.max(tickTimeSec, lastTimeSecRef.current)
+    const lastPoint = history[history.length - 1]
+    const tickSec = Math.floor(lastTick.timestamp / 1000)
+    const sec = lastPoint ? Math.max(tickSec, lastPoint.time) : tickSec
 
-    lastTimeSecRef.current = safeTimeSec
+    if (lastPoint && lastPoint.time === sec) {
+      lastPoint.value = lastTick.price
+    } else {
+      history.push({ time: sec, value: lastTick.price })
+      if (history.length > MAX_HISTORY_SEC) {
+        history.splice(0, history.length - SEED_HISTORY_SEC)
+      }
+    }
 
+    const bucketSec = bucketSecRef.current
     series.update({
-      time: safeTimeSec as UTCTimestamp,
+      time: (Math.floor(sec / bucketSec) * bucketSec) as UTCTimestamp,
       value: lastTick.price
     })
   }, [latestTicks])
 
   const displayPrice = currentTick?.price ?? BASE_SEED_PRICE
-  const priceChangePercent = ((displayPrice - openPriceRef.current) / openPriceRef.current) * 100
+  const priceChangePercent = ((displayPrice - SEED_OPEN_PRICE) / SEED_OPEN_PRICE) * 100
   const isPositive = priceChangePercent >= 0
 
   return (

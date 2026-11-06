@@ -1,5 +1,5 @@
 import type { TradeTick, OrderBookDepth } from '@/lib/type'
-import { encodeTicksToBuffer } from '@/lib/binary-protocol'
+import { encodeTicksToBuffer, allocateTickBuffer, TICK_STRIDE } from '@/lib/binary-protocol'
 
 const ctx: Worker = self as unknown as Worker
 
@@ -10,6 +10,7 @@ export type StreamCommand =
   | { type: 'START', payload?: { batchIntervalMs?: number } }
   | { type: 'STOP' }
   | { type: 'INGEST_TICK', payload: TradeTick }
+  | { type: 'INGEST_BINARY', payload: { buffer: ArrayBuffer, count: number } }
   | { type: 'INGEST_DEPTH', payload: OrderBookDepth }
   | { type: 'RESET' }
 
@@ -29,6 +30,8 @@ let flushTimer: ReturnType<typeof setInterval> | null = null
 
 // 暫存資料槽，在短時間內接收的連續資料暫存在這裡
 let tickBuffer: TradeTick[] = []
+let binaryChunks: Float64Array[] = []
+let binaryTickCount = 0
 let latestDepth: OrderBookDepth | null = null
 
 // 監測統計變數
@@ -45,18 +48,34 @@ const flushBatch = () => {
 	const now = performance.now()
 	const elapsed = now - lastMetricsSampleTime
 
-	if (tickBuffer.length) {
-		const ticksToSend = tickBuffer
+	const totalCount = tickBuffer.length + binaryTickCount
+	if (totalCount > 0) {
+		// 將逐筆物件與二進位分塊合併成一塊連續記憶體，再以 Transferable 一次移交
+		const view = tickBuffer.length > 0 && binaryTickCount === 0
+			? encodeTicksToBuffer(tickBuffer)
+			: allocateTickBuffer(totalCount)
+
+		if (binaryTickCount > 0) {
+			let offset = 0
+			for (const chunk of binaryChunks) {
+				view.set(chunk, offset)
+				offset += chunk.length
+			}
+			if (tickBuffer.length > 0) {
+				view.set(encodeTicksToBuffer(tickBuffer), offset)
+			}
+		}
+
 		tickBuffer = []
+		binaryChunks = []
+		binaryTickCount = 0
 
-		const view = encodeTicksToBuffer(ticksToSend)
-		const buffer = view.buffer
-
+		const buffer = view.buffer as ArrayBuffer
 		ctx.postMessage(
 			{
 				type: 'BINARY_BATCH_TICKS',
 				buffer,
-				count: ticksToSend.length
+				count: totalCount
 			} as StreamEvent,
 			[buffer]
 		)
@@ -114,6 +133,8 @@ const stop = () => {
   }
   
 	tickBuffer = []
+	binaryChunks = []
+	binaryTickCount = 0
   latestDepth = null
   
 	ctx.postMessage({ type: 'STATUS', status: 'stopped' } as StreamEvent)
@@ -137,6 +158,14 @@ ctx.onmessage = (event: MessageEvent<StreamCommand>) => {
         processedTicksInWindow++
       }
       break
+    case 'INGEST_BINARY':
+      if (status === 'running' && command.payload.count > 0) {
+        const chunk = new Float64Array(command.payload.buffer, 0, command.payload.count * TICK_STRIDE)
+        binaryChunks.push(chunk)
+        binaryTickCount += command.payload.count
+        processedTicksInWindow += command.payload.count
+      }
+      break
     case 'INGEST_DEPTH':
       if (status === 'running') {
         latestDepth = command.payload
@@ -149,6 +178,8 @@ ctx.onmessage = (event: MessageEvent<StreamCommand>) => {
       break
     case 'RESET':
       tickBuffer = []
+      binaryChunks = []
+      binaryTickCount = 0
       latestDepth = null
       processedTicksInWindow = 0
       break

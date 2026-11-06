@@ -1,9 +1,8 @@
 'use client'
 
-import React, { useId } from 'react'
+import React, { useId, type RefObject } from 'react'
 import { PanelCard } from '@/components/ui/panel-card'
 import { usePerformanceHUD } from '@/hooks/usePerformanceHUD'
-import type { PipelineMode } from '@/components/ab-mode-switch'
 import { cn } from '@/lib/utils'
 
 interface SparklineProps {
@@ -70,42 +69,55 @@ const Sparkline = ({
 }
 
 export interface PerformanceHUDProps {
-  currentTps: number
-  bufferUsage: number
+  /** 主執行緒實際量測到的每秒 Tick 數 */
+  measuredTps: number
+  /** Ring Buffer 使用率（%），Baseline 模式沒有 Ring Buffer 時傳 null */
+  bufferUsage: number | null
+  /** Baseline 模式的主執行緒延遲（ms），Accelerated 模式傳 null */
+  mainThreadLagMs?: number | null
+  /** Buffer 卡片下方的策略統計文字 */
+  bufferDetail?: string
   isRunning: boolean
-  mode: PipelineMode
-  renderCount?: number
+  /** 由父層在 commit 後直接寫入 Render 次數的 span */
+  renderCountRef?: RefObject<HTMLSpanElement | null>
   className?: string
 }
 
 export const PerformanceHUD = ({
-  currentTps,
+  measuredTps,
   bufferUsage,
+  mainThreadLagMs = null,
+  bufferDetail,
   isRunning,
-  mode,
-  renderCount,
+  renderCountRef,
   className
 }: PerformanceHUDProps) => {
   const hud = usePerformanceHUD({
-    currentTps,
+    measuredTps,
     bufferUsage,
-    isRunning,
-    mode
+    mainThreadLagMs,
+    isRunning
   })
 
-  const isFpsLow = hud.fps < 45
-  const isBufferHigh = hud.bufferUsage >= 75
+  // 卡片種類與 Lag 數值以 props 為準（自動暫停時也能顯示觸發當下的延遲）；曲線取 HUD 取樣歷史
+  const showLag = mainThreadLagMs !== null
+  const lagValue = mainThreadLagMs ?? 0
+  const isLagHigh = showLag && lagValue >= 100
+
+  const isFpsLow = isRunning && hud.fps < 45
+  const isBufferHigh = hud.bufferUsage !== null && hud.bufferUsage >= 75
 
   return (
     <PanelCard
       title='Performance'
       headerRight={
-        renderCount !== undefined && (
+        renderCountRef && (
           <span
+            ref={renderCountRef}
             suppressHydrationWarning
             className='font-mono tabular-nums text-[10px] text-zinc-400 dark:text-zinc-500'
           >
-            Renders: {renderCount.toLocaleString()}
+            Renders: 0
           </span>
         )
       }
@@ -133,8 +145,8 @@ export const PerformanceHUD = ({
           data={hud.fpsHistory}
           strokeColor={isFpsLow ? '#f43f5e' : '#10b981'}
           fillColor={isFpsLow ? '#f43f5e' : '#10b981'}
-          min={5}
-          max={65}
+          min={0}
+          max={Math.max(65, ...hud.fpsHistory)}
         />
       </div>
 
@@ -163,7 +175,7 @@ export const PerformanceHUD = ({
             JS Heap
           </div>
           <div className='font-mono tabular-nums text-base font-extrabold text-zinc-900 dark:text-zinc-100'>
-            {hud.jsHeapMB.toFixed(1)}MB
+            {hud.jsHeapMB !== null ? `${hud.jsHeapMB.toFixed(1)}MB` : 'N/A'}
           </div>
         </div>
         <Sparkline
@@ -173,30 +185,46 @@ export const PerformanceHUD = ({
         />
       </div>
 
-      {/* 4. Buffer Usage Sparkline Row */}
+      {/* 4. Buffer Usage（Accelerated）/ Main Thread Lag（Baseline）Sparkline Row */}
       <div className='flex items-center justify-between gap-2 rounded-xl border border-zinc-100 bg-zinc-50/50 px-3 py-2 dark:border-zinc-800/80 dark:bg-zinc-800/30'>
         <div className='min-w-[78px]'>
           <div className='text-[11px] font-medium text-zinc-400 dark:text-zinc-500'>
-            Buffer Usage
+            {showLag ? 'Main Thread Lag' : 'Buffer Usage'}
           </div>
           <div
             className={cn(
               'font-mono tabular-nums text-base font-extrabold',
-              isBufferHigh
+              (showLag ? isLagHigh : isBufferHigh)
                 ? 'text-rose-600 dark:text-rose-400'
                 : 'text-zinc-900 dark:text-zinc-100'
             )}
           >
-            {hud.bufferUsage.toFixed(1)}%
+            {showLag
+              ? `${lagValue.toLocaleString()}ms`
+              : hud.bufferUsage !== null ? `${hud.bufferUsage.toFixed(1)}%` : 'N/A'}
           </div>
+          {!showLag && bufferDetail && (
+            <div className='font-mono tabular-nums text-[10px] text-zinc-400 dark:text-zinc-500 whitespace-nowrap'>
+              {bufferDetail}
+            </div>
+          )}
         </div>
-        <Sparkline
-          data={hud.bufferHistory}
-          strokeColor={isBufferHigh ? '#f43f5e' : '#f59e0b'}
-          fillColor={isBufferHigh ? '#f43f5e' : '#f59e0b'}
-          min={0}
-          max={100}
-        />
+        {showLag ? (
+          <Sparkline
+            data={hud.lagHistory}
+            strokeColor={isLagHigh ? '#f43f5e' : '#f59e0b'}
+            fillColor={isLagHigh ? '#f43f5e' : '#f59e0b'}
+            min={0}
+          />
+        ) : (
+          <Sparkline
+            data={hud.bufferHistory}
+            strokeColor={isBufferHigh ? '#f43f5e' : '#f59e0b'}
+            fillColor={isBufferHigh ? '#f43f5e' : '#f59e0b'}
+            min={0}
+            max={100}
+          />
+        )}
       </div>
     </PanelCard>
   )

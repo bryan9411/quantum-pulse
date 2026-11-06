@@ -1,4 +1,5 @@
 import type { TradeTick, OrderSide, OrderBookDepth, OrderBookLevel } from '../lib/type'
+import { encodeTicksToBuffer } from '../lib/binary-protocol'
 
 /**
  * 發送給 Worker 的指令型別
@@ -12,7 +13,7 @@ export type WorkerInboundCommand =
  * Worker 回傳事件型別
  */
 export type WorkerOutboundEvent =
-  | { type: 'tick'; data: TradeTick }
+  | { type: 'tickBatch'; buffer: ArrayBuffer; count: number }
   | { type: 'depth'; data: OrderBookDepth }
   | { type: 'status'; status: 'running' | 'stopped' }
 
@@ -42,12 +43,14 @@ const generateGaussianNoise = (): number => {
 /**
  * 幾何布朗運動（GBM）下一價格推算：
  * 公式：S(t + dt) = S(t) * exp((drift - 0.5 * vol^2) * dt + vol * sqrt(dt) * Z)
+ * dt 以「秒」為單位並等於 1 / TPS，因此每秒的價格波動幅度與 TPS 無關。
+ * volatility = 0.001 / sqrt(秒) ≈ 每分鐘約 0.77% 標準差（約 ±500 USDT）。
  */
 const calculateNextGbmPrice = (
   price: number,
-  dt = 0.001,
-  drift = 0.00015,
-  volatility = 0.0035
+  dt: number,
+  drift = 0,
+  volatility = 0.001
 ): number => {
   const z = generateGaussianNoise()
   const driftTerm = (drift - 0.5 * Math.pow(volatility, 2)) * dt
@@ -99,7 +102,7 @@ const produceOrderBookDepth = (midPrice: number): OrderBookDepth => {
  */
 const produceSingleTick = (): TradeTick => {
   tickSequenceId++
-  currentPrice = calculateNextGbmPrice(currentPrice)
+  currentPrice = calculateNextGbmPrice(currentPrice, 1 / Math.max(1, targetTps))
 
   const side: OrderSide = Math.random() > 0.48 ? 'buy' : 'sell'
   const size = Number((Math.random() * 1.49 + 0.01).toFixed(4))
@@ -113,10 +116,14 @@ const produceSingleTick = (): TradeTick => {
   }
 }
 
+const TICK_LOOP_INTERVAL_MS = 10
+// 分頁背景節流後恢復時，最多補發 250ms 的量，避免一次灌爆下游
+const MAX_CATCH_UP_SECONDS = 0.25
+
 /**
- * 突破瀏覽器 setInterval 4ms (250Hz) 限制：
- * 當 targetTps > 100 時，固定以 10ms (100Hz) 觸發並在單次 Tick 迴圈內補齊對應筆數，
- * 確保 1000 / 2000 TPS 能真正達到對應吞吐量！
+ * 突破瀏覽器 setInterval 4ms (250Hz) 限制並精準對齊 TPS：
+ * 固定以 10ms 觸發，依「實際經過時間 × targetTps」累積應發筆數（含小數進位），
+ * 因此任何 TPS（例如 149、1234）都能得到正確吞吐量，也不受 setInterval 漂移影響。
  */
 const restartInterval = () => {
   if (timerId !== null) {
@@ -126,24 +133,41 @@ const restartInterval = () => {
 
   if (!isRunning) return
 
-  const intervalMs = targetTps >= 100 ? 10 : Math.max(10, Math.floor(1000 / targetTps))
-  const ticksPerBatch = targetTps >= 100 ? Math.max(1, Math.round(targetTps / 100)) : 1
+  let owedTicks = 0
+  let lastLoopTime = performance.now()
 
   timerId = setInterval(() => {
-    for (let i = 0; i < ticksPerBatch; i++) {
-      const tick = produceSingleTick()
-      self.postMessage({
-        type: 'tick',
-        data: tick
-      } as WorkerOutboundEvent)
+    const now = performance.now()
+    const elapsedSec = (now - lastLoopTime) / 1000
+    lastLoopTime = now
+
+    owedTicks = Math.min(
+      owedTicks + elapsedSec * targetTps,
+      Math.max(1, targetTps * MAX_CATCH_UP_SECONDS)
+    )
+
+    const ticksThisLoop = Math.floor(owedTicks)
+    if (ticksThisLoop === 0) return
+    owedTicks -= ticksThisLoop
+
+    // 每輪只發一則訊息：整批 Tick 編碼為 Float64Array 並以 Transferable 零拷貝移交，
+    // 50,000 TPS 時也只有 100 msg/s，不會把主執行緒的訊息佇列塞爆
+    const batch: TradeTick[] = new Array(ticksThisLoop)
+    for (let i = 0; i < ticksThisLoop; i++) {
+      batch[i] = produceSingleTick()
     }
+    const { buffer } = encodeTicksToBuffer(batch)
+    ;(self as unknown as Worker).postMessage(
+      { type: 'tickBatch', buffer, count: ticksThisLoop } as WorkerOutboundEvent,
+      [buffer]
+    )
 
     const depth = produceOrderBookDepth(currentPrice)
     self.postMessage({
       type: 'depth',
       data: depth
     } as WorkerOutboundEvent)
-  }, intervalMs)
+  }, TICK_LOOP_INTERVAL_MS)
 }
 
 self.onmessage = (event: MessageEvent<WorkerInboundCommand>) => {

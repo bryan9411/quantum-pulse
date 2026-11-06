@@ -22,7 +22,7 @@ export const runBenchmark = (
 
     const startTime = performance.now()
 
-    const handleMessage = (event: MessageEvent) => {
+    const handleMessage = () => {
       const endTime = performance.now()
 
       worker.removeEventListener('message', handleMessage)

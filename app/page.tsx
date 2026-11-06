@@ -14,6 +14,9 @@ import { runBenchmark, type BenchmarkResult } from '@/lib/benchmark-runner'
 import { runQueueBenchmark, type QueueBenchmarkResult } from '@/lib/queue-benchmark'
 import { useWorkerStream } from '@/hooks/useWorkerStream'
 
+// Baseline 主執行緒延遲超過此值即自動暫停
+const BASELINE_LAG_LIMIT_MS = 3000
+
 const STRATEGY_OPTIONS: {
   id: BackpressureStrategy
   label: string
@@ -59,23 +62,52 @@ export default function TerminalPage() {
     stop: stopStream,
     reset: resetStream,
     setStrategy,
-    ingestTick,
+    ingestBinary,
     ingestDepth,
     burstInject
   } = useWorkerStream()
 
+  // Render 計數：在 commit 後（useEffect）累加並直接寫入 DOM，避免在 render 階段讀寫 ref
   const renderCountRef = useRef(0)
-  renderCountRef.current++
+  const renderBadgeRef = useRef<HTMLSpanElement | null>(null)
+  useEffect(() => {
+    renderCountRef.current++
+    if (renderBadgeRef.current) {
+      renderBadgeRef.current.textContent = `Renders: ${renderCountRef.current.toLocaleString()}`
+    }
+  })
 
   const naiveQueueRef = useRef<TradeTick[]>([])
-  const lastBaselineCommitRef = useRef(0)
-  const dataSourceRef = useRef<MockDataSource | null>(null)
+  const pendingBaselineTicksRef = useRef<TradeTick[]>([])
+  const lastBaselineTickCommitRef = useRef(0)
+  const lastBaselineDepthCommitRef = useRef(0)
+  const ticksReceivedRef = useRef(0)
+  const maxLagInWindowRef = useRef(0)
+  const autoPausedRef = useRef(false)
+  const [measuredTps, setMeasuredTps] = useState(0)
+  const [mainThreadLagMs, setMainThreadLagMs] = useState(0)
+  const [autoPauseNotice, setAutoPauseNotice] = useState<string | null>(null)
+  const [dataSource] = useState(() => new MockDataSource())
 
-  if (!dataSourceRef.current) {
-    dataSourceRef.current = new MockDataSource()
-  }
+  // 主執行緒實際收到的 Tick 速率（兩種管線共用同一個量測點）
+  useEffect(() => {
+    if (!isRunning) return
 
-  const dataSource = dataSourceRef.current
+    ticksReceivedRef.current = 0
+    maxLagInWindowRef.current = 0
+    let lastSample = performance.now()
+    const timer = window.setInterval(() => {
+      const now = performance.now()
+      const elapsed = now - lastSample
+      setMeasuredTps(Math.round((ticksReceivedRef.current * 1000) / elapsed))
+      setMainThreadLagMs(maxLagInWindowRef.current)
+      ticksReceivedRef.current = 0
+      maxLagInWindowRef.current = 0
+      lastSample = now
+    }, 1000)
+
+    return () => window.clearInterval(timer)
+  }, [isRunning])
 
   useEffect(() => {
     if (!isRunning) {
@@ -84,7 +116,7 @@ export default function TerminalPage() {
       return
     }
 
-    dataSource.setTps(tps)
+    pendingBaselineTicksRef.current = []
     if (mode === 'accelerated') {
       startStream(16)
     } else {
@@ -92,10 +124,40 @@ export default function TerminalPage() {
     }
     dataSource.connect()
 
-    const unsubTick = dataSource.subscribe('tick', (tick) => {
-      if (mode === 'accelerated') {
-        ingestTick(tick)
-      } else {
+    autoPausedRef.current = false
+
+    // ⚡ Accelerated：整批二進位 buffer 直接轉交給 StreamProcessor Worker，主執行緒不解碼
+    const unsubBatch = mode === 'accelerated'
+      ? dataSource.subscribe('tickBatch', ({ buffer, count }) => {
+          ticksReceivedRef.current += count
+          ingestBinary(buffer, count)
+        })
+      : () => {}
+
+    const unsubTick = mode === 'baseline'
+      ? dataSource.subscribe('tick', (tick) => {
+        if (autoPausedRef.current) return
+        ticksReceivedRef.current++
+
+        // 主執行緒延遲：Tick 在 Worker 產生到主執行緒真正處理之間的時間差
+        const lag = Date.now() - tick.timestamp
+        if (lag > maxLagInWindowRef.current) {
+          maxLagInWindowRef.current = lag
+        }
+
+        // 安全閥：延遲超過門檻代表主執行緒已追不上，自動暫停以免分頁完全卡死
+        if (lag > BASELINE_LAG_LIMIT_MS) {
+          autoPausedRef.current = true
+          dataSource.disconnect()
+          setIsRunning(false)
+          setMeasuredTps(0)
+          setMainThreadLagMs(lag)
+          setAutoPauseNotice(
+            `Baseline 主執行緒延遲已達 ${(lag / 1000).toFixed(1)} 秒，已自動暫停以避免分頁卡死。切到 Accelerated 用同樣 TPS 再跑一次對比看看。`
+          )
+          return
+        }
+
         // 🐢 Baseline 未優化對照組：
         // 1. 每筆 Tick 都在主執行緒做 Array.push + shift (O(N)) 與深拷貝序列化，消耗主執行緒幀預算
         const q = naiveQueueRef.current
@@ -108,35 +170,42 @@ export default function TerminalPage() {
         }
         const clonedSnapshot = JSON.parse(JSON.stringify(q.slice(-250))) as TradeTick[]
         const latestCloned = clonedSnapshot[clonedSnapshot.length - 1] ?? tick
+        pendingBaselineTicksRef.current.push(latestCloned)
 
         // 2. 控制 React setState 最小間隔 (20ms)，防止高頻同步訊息觸發 React Maximum update depth 保護鎖
+        //    只提交「上次 commit 之後」的新成交，避免重複或遺漏
         const now = performance.now()
-        if (now - lastBaselineCommitRef.current >= 20) {
-          lastBaselineCommitRef.current = now
-          setCurrentTick(latestCloned)
-          setBaselineTicks(clonedSnapshot.slice(-8))
+        if (now - lastBaselineTickCommitRef.current >= 20) {
+          lastBaselineTickCommitRef.current = now
+          const batch = pendingBaselineTicksRef.current
+          pendingBaselineTicksRef.current = []
+          setCurrentTick(batch[batch.length - 1])
+          setBaselineTicks(batch)
         }
-      }
-    })
+      })
+      : () => {}
 
     const unsubDepth = dataSource.subscribe('depth', (depth) => {
       if (mode === 'accelerated') {
         ingestDepth(depth)
       } else {
+        // 盤口使用獨立的節流時間戳，不受成交 commit 影響
         const now = performance.now()
-        if (now - lastBaselineCommitRef.current >= 25) {
+        if (now - lastBaselineDepthCommitRef.current >= 25) {
+          lastBaselineDepthCommitRef.current = now
           setCurrentDepth(depth)
         }
       }
     })
 
     return () => {
+      unsubBatch()
       unsubTick()
       unsubDepth()
       dataSource.disconnect()
       stopStream()
     }
-  }, [isRunning, mode, tps, dataSource, startStream, stopStream, ingestTick, ingestDepth])
+  }, [isRunning, mode, dataSource, startStream, stopStream, ingestBinary, ingestDepth])
 
   const handleTpsChange = (newTps: number) => {
     setTps(newTps)
@@ -145,6 +214,13 @@ export default function TerminalPage() {
 
   const handleToggle = (running: boolean) => {
     setIsRunning(running)
+    if (running) {
+      setAutoPauseNotice(null)
+      setMainThreadLagMs(0)
+    }
+    if (!running) {
+      setMeasuredTps(0)
+    }
   }
 
   const handleRunBenchmark = async () => {
@@ -172,7 +248,7 @@ export default function TerminalPage() {
   const handleRunQueueBenchmark = () => {
     setQueueBenchmarking(true)
     setTimeout(() => {
-      const res = runQueueBenchmark(100000)
+      const res = runQueueBenchmark(200000)
       setQueueBenchResult(res)
       setQueueBenchmarking(false)
     }, 50)
@@ -186,6 +262,14 @@ export default function TerminalPage() {
   const activeDepth = mode === 'accelerated' ? (latestDepth ?? currentDepth) : currentDepth
   const batchTotalVolume = activeTicks.reduce((sum, tick) => sum + tick.size, 0)
 
+  // 背壓策略的實際效果：Queue 會讓 Ring Buffer 溢位覆寫；Drop 丟棄；Coalesce 合併
+  const strategyDetail =
+    strategy === 'queue'
+      ? `排隊 ${metrics.queueSize.toLocaleString()} 筆 · 溢位覆寫 ${metrics.droppedTicks.toLocaleString()}`
+      : strategy === 'drop'
+        ? `累計丟棄 ${metrics.coalescedTicks.toLocaleString()} 筆`
+        : `累計合併 ${metrics.coalescedTicks.toLocaleString()} 筆`
+
   return (
     <main className='min-h-screen px-4 py-3 md:px-6 md:py-4'>
       <div className='mx-auto max-w-[1440px] space-y-3.5'>
@@ -198,6 +282,19 @@ export default function TerminalPage() {
           showLab={showLab}
           onToggleLab={() => setShowLab((prev) => !prev)}
         />
+
+        {autoPauseNotice && (
+          <div className='flex items-start justify-between gap-3 rounded-xl border border-rose-300 bg-rose-50 px-4 py-2.5 text-xs text-rose-800 dark:border-rose-900/60 dark:bg-rose-950/30 dark:text-rose-300'>
+            <span>⚠️ {autoPauseNotice}</span>
+            <button
+              type='button'
+              onClick={() => setAutoPauseNotice(null)}
+              className='shrink-0 font-semibold hover:underline cursor-pointer'
+            >
+              關閉
+            </button>
+          </div>
+        )}
 
         {/* 主終端機三欄 Bento Grid（對齊 design-preview.jpg） */}
         <div className='grid grid-cols-1 lg:grid-cols-[minmax(0,1fr)_280px_310px] gap-3.5 items-stretch'>
@@ -217,11 +314,12 @@ export default function TerminalPage() {
           {/* 右欄：Performance HUD 四大 Sparkline + 成交流水虛擬列表 + TPS 調頻控制器 */}
           <div className='flex flex-col gap-3.5'>
             <PerformanceHUD
-              currentTps={tps}
-              bufferUsage={metrics.bufferUsage}
+              measuredTps={measuredTps}
+              bufferUsage={mode === 'accelerated' ? metrics.bufferUsage : null}
+              mainThreadLagMs={mode === 'baseline' ? mainThreadLagMs : null}
+              bufferDetail={mode === 'accelerated' ? strategyDetail : undefined}
               isRunning={isRunning}
-              mode={mode}
-              renderCount={renderCountRef.current}
+              renderCountRef={renderBadgeRef}
             />
 
             <RecentTrades
@@ -293,7 +391,7 @@ export default function TerminalPage() {
               <div className='flex items-center justify-between mb-3'>
                 <div>
                   <h2 className='text-sm font-bold text-amber-900 dark:text-amber-300'>
-                    💥 4-A Array.push vs push + shift (100,000 次操作)
+                    💥 4-A Array.push vs push + shift (200,000 次操作，視窗 50,000)
                   </h2>
                   <p className='text-xs text-amber-700/80 dark:text-amber-400/80 mt-0.5'>
                     親眼觀察 V8 引擎連續記憶體 FixedArray 在 shift 時強制搬遷（O(n) memmove）的恐怖代價
@@ -304,7 +402,7 @@ export default function TerminalPage() {
                   disabled={queueBenchmarking}
                   className='px-4 py-2 text-xs font-semibold rounded-lg bg-amber-600 text-white hover:bg-amber-700 transition disabled:opacity-50 cursor-pointer shadow-xs'
                 >
-                  {queueBenchmarking ? '計算中...' : '開始 10 萬次佇列碰撞'}
+                  {queueBenchmarking ? '計算中...' : '開始 20 萬次佇列碰撞'}
                 </button>
               </div>
 

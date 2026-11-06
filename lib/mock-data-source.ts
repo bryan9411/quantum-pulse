@@ -1,3 +1,4 @@
+import { decodeBufferToTicks, TICK_STRIDE } from './binary-protocol'
 import type {
   ConnectionStatus,
   DataSourceEventType,
@@ -14,13 +15,13 @@ export class MockDataSource implements DataSource {
   private worker: Worker | null = null
   private lastPrice = 67432.18
   private targetTps = 1000
-  private listeners: Map<DataSourceEventType, Set<DataSourceListener<any>>> = new Map()
-
-  constructor() {
-    this.listeners.set('tick', new Set())
-    this.listeners.set('depth', new Set())
-    this.listeners.set('status', new Set())
-    this.listeners.set('metrics', new Set())
+  private tickSeq = 0
+  private listeners: { [K in DataSourceEventType]: Set<DataSourceListener<K>> } = {
+    tick: new Set(),
+    tickBatch: new Set(),
+    depth: new Set(),
+    status: new Set(),
+    metrics: new Set()
   }
 
   get status(): ConnectionStatus {
@@ -77,18 +78,11 @@ export class MockDataSource implements DataSource {
     event: T,
     listener: DataSourceListener<T>
   ): Unsubscribe {
-    const bucket = this.listeners.get(event)
-
-    if (bucket) {
-      bucket.add(listener)
-    }
+    const bucket = this.listeners[event] as Set<DataSourceListener<T>>
+    bucket.add(listener)
 
     return () => {
-      const currentBucket = this.listeners.get(event)
-
-      if (currentBucket) {
-        currentBucket.delete(listener)
-      }
+      bucket.delete(listener)
     }
   }
 
@@ -109,9 +103,9 @@ export class MockDataSource implements DataSource {
     event: T,
     data: DataSourcePayloadMap[T]
   ): void {
-    const bucket = this.listeners.get(event)
+    const bucket = this.listeners[event] as Set<DataSourceListener<T>>
 
-    if (!bucket || bucket.size === 0) return
+    if (bucket.size === 0) return
 
     bucket.forEach((listener) => {
       try {
@@ -126,10 +120,24 @@ export class MockDataSource implements DataSource {
     const message = event.data
 
     switch (message.type) {
-      case 'tick':
-        this.lastPrice = message.data.price
-        this.emit('tick', message.data)
+      case 'tickBatch': {
+        if (message.count === 0) break
+        const view = new Float64Array(message.buffer)
+        this.lastPrice = view[(message.count - 1) * TICK_STRIDE]
+
+        // 只有在有人訂閱逐筆 'tick'（Baseline 管線）時才在主執行緒解碼成物件
+        if (this.listeners.tick.size > 0) {
+          const ticks = decodeBufferToTicks(message.buffer)
+          for (let i = 0; i < ticks.length; i++) {
+            ticks[i].id = `tick_${++this.tickSeq}`
+            this.emit('tick', ticks[i])
+          }
+        }
+
+        // 批次訂閱者（Accelerated 管線）可直接把 buffer 轉交給下一個 Worker，因此必須最後才發送
+        this.emit('tickBatch', { buffer: message.buffer, count: message.count })
         break
+      }
 
       case 'depth':
         this.emit('depth', message.data)
