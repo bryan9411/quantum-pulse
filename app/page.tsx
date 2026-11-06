@@ -5,6 +5,7 @@ import { MockDataSource } from '@/lib/mock-data-source'
 import type { TradeTick, OrderBookDepth } from '@/lib/type'
 import type { BackpressureStrategy } from '@/lib/coalescing-strategies'
 import { TpsController } from '@/components/tps-controller'
+import { PriceChart } from '@/components/price-chart'
 import { runBenchmark, type BenchmarkResult } from '@/lib/benchmark-runner'
 import { runQueueBenchmark, type QueueBenchmarkResult } from '@/lib/queue-benchmark'
 import { useWorkerStream } from '@/hooks/useWorkerStream'
@@ -416,6 +417,12 @@ export default function NaivePage() {
             </div>
           </div>
         </div>
+
+        {/* 5-B lightweight-charts Canvas 即時走勢圖 */}
+        <PriceChart
+          latestTicks={latestTicks}
+          currentTick={currentTick}
+        />
 
         <div className='grid grid-cols-1 md:grid-cols-2 gap-6'>
           <div className='rounded-xl border border-zinc-200 bg-white p-6 shadow-xs dark:border-zinc-800 dark:bg-zinc-950'>
