@@ -1,6 +1,11 @@
 import { useState, useEffect, useRef, useCallback } from 'react'
 import type { TradeTick, OrderBookDepth } from '@/lib/type'
 import { TypedRingBuffer } from '@/lib/ring-buffer'
+import {
+  type BackpressureStrategy,
+  executeBackpressureStrategy,
+  coalesceOrderBookDepth
+} from '@/lib/coalescing-strategies'
 import type { StreamCommand, StreamEvent } from '@/workers/stream-processor.worker'
 
 const RING_BUFFER_CAPACITY = 4096
@@ -19,6 +24,7 @@ export const getWatermarkStatus = (usagePercent: number): BufferWatermarkStatus 
 
 export interface WorkerStreamState {
   status: 'idle' | 'running' | 'stopped'
+  strategy: BackpressureStrategy
   latestTicks: TradeTick[]
   latestDepth: OrderBookDepth | null
   metrics: {
@@ -28,6 +34,7 @@ export interface WorkerStreamState {
     bufferUsage: number
     bufferCapacity: number
     droppedTicks: number
+    coalescedTicks: number
     watermarkStatus: BufferWatermarkStatus
     lastLatencyMs: number
   }
@@ -37,6 +44,7 @@ export interface UseWorkerStreamReturn extends WorkerStreamState {
   start: (batchIntervalMs?: number) => void
   stop: () => void
   reset: () => void
+  setStrategy: (strategy: BackpressureStrategy) => void
   ingestTick: (tick: TradeTick) => void
   ingestDepth: (depth: OrderBookDepth) => void
   burstInject: (count: number, basePrice?: number) => void
@@ -51,8 +59,11 @@ export const useWorkerStream = (): UseWorkerStreamReturn => {
   const lastFpsSampleTimeRef = useRef(0)
   const lastTelemetrySampleTimeRef = useRef(0)
   const currentFpsRef = useRef(0)
+  const strategyRef = useRef<BackpressureStrategy>('queue')
+  const coalescedCountRef = useRef(0)
 
   const [status, setStatus] = useState<'idle' | 'running' | 'stopped'>('idle')
+  const [strategy, setStrategyState] = useState<BackpressureStrategy>('queue')
   const [latestTicks, setLatestTicks] = useState<TradeTick[]>([])
   const [latestDepth, setLatestDepth] = useState<OrderBookDepth | null>(null)
   const [metrics, setMetrics] = useState<WorkerStreamState['metrics']>({
@@ -62,9 +73,15 @@ export const useWorkerStream = (): UseWorkerStreamReturn => {
     bufferUsage: 0,
     bufferCapacity: RING_BUFFER_CAPACITY,
     droppedTicks: 0,
+    coalescedTicks: 0,
     watermarkStatus: 'healthy',
     lastLatencyMs: 0
   })
+
+  const setStrategy = useCallback((nextStrategy: BackpressureStrategy) => {
+    strategyRef.current = nextStrategy
+    setStrategyState(nextStrategy)
+  }, [])
 
   useEffect(() => {
     if (typeof window === 'undefined') return
@@ -86,8 +103,13 @@ export const useWorkerStream = (): UseWorkerStreamReturn => {
       }
 
       if (ringBuffer.size > 0) {
-        const drainedTicks = ringBuffer.drain(MAX_TICKS_PER_FRAME)
-        setLatestTicks(drainedTicks)
+        const batchResult = executeBackpressureStrategy(
+          strategyRef.current,
+          ringBuffer,
+          MAX_TICKS_PER_FRAME
+        )
+        coalescedCountRef.current += batchResult.discardedOrMergedCount
+        setLatestTicks(batchResult.ticks)
       }
 
       if (pendingDepthRef.current !== null) {
@@ -107,6 +129,7 @@ export const useWorkerStream = (): UseWorkerStreamReturn => {
           bufferUsage: usage,
           bufferCapacity: ringBuffer.maxCapacity,
           droppedTicks: ringBuffer.dropped,
+          coalescedTicks: coalescedCountRef.current,
           watermarkStatus: getWatermarkStatus(usage)
         }))
       }
@@ -139,7 +162,10 @@ export const useWorkerStream = (): UseWorkerStreamReturn => {
         }
 
         case 'LATEST_DEPTH':
-          pendingDepthRef.current = message.depth
+          pendingDepthRef.current = coalesceOrderBookDepth(
+            pendingDepthRef.current,
+            message.depth
+          )
           break
 
         case 'METRICS': {
@@ -151,6 +177,7 @@ export const useWorkerStream = (): UseWorkerStreamReturn => {
             bufferUsage: usage,
             bufferCapacity: ringBuffer.maxCapacity,
             droppedTicks: ringBuffer.dropped,
+            coalescedTicks: coalescedCountRef.current,
             watermarkStatus: getWatermarkStatus(usage),
             lastLatencyMs: message.metrics.lastLatencyMs
           }))
@@ -199,6 +226,7 @@ export const useWorkerStream = (): UseWorkerStreamReturn => {
     const ringBuffer = ringBufferRef.current
     ringBuffer.clear()
     pendingDepthRef.current = null
+    coalescedCountRef.current = 0
     setLatestTicks([])
     setLatestDepth(null)
     setMetrics((prev) => ({
@@ -206,6 +234,7 @@ export const useWorkerStream = (): UseWorkerStreamReturn => {
       queueSize: 0,
       bufferUsage: 0,
       droppedTicks: 0,
+      coalescedTicks: 0,
       watermarkStatus: 'healthy'
     }))
   }, [sendCommand])
@@ -239,18 +268,21 @@ export const useWorkerStream = (): UseWorkerStreamReturn => {
       queueSize: ringBuffer.size,
       bufferUsage: usage,
       droppedTicks: ringBuffer.dropped,
+      coalescedTicks: coalescedCountRef.current,
       watermarkStatus: getWatermarkStatus(usage)
     }))
   }, [])
 
   return {
     status,
+    strategy,
     latestTicks,
     latestDepth,
     metrics,
     start,
     stop,
     reset,
+    setStrategy,
     ingestTick,
     ingestDepth,
     burstInject

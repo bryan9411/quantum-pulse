@@ -3,10 +3,33 @@
 import React, { useState, useEffect, useRef } from 'react'
 import { MockDataSource } from '@/lib/mock-data-source'
 import type { TradeTick, OrderBookDepth } from '@/lib/type'
+import type { BackpressureStrategy } from '@/lib/coalescing-strategies'
 import { TpsController } from '@/components/tps-controller'
 import { runBenchmark, type BenchmarkResult } from '@/lib/benchmark-runner'
 import { runQueueBenchmark, type QueueBenchmarkResult } from '@/lib/queue-benchmark'
 import { useWorkerStream } from '@/hooks/useWorkerStream'
+
+const STRATEGY_OPTIONS: {
+  id: BackpressureStrategy
+  label: string
+  desc: string
+}[] = [
+    {
+      id: 'queue',
+      label: '🐢 Queue (排隊死扛)',
+      desc: '每幀只抽 60 筆，零丟失但水塔積水、畫面嚴重滯後'
+    },
+    {
+      id: 'drop',
+      label: '✂️ Drop (斷尾丟棄)',
+      desc: '一次抽乾水塔只留最新 60 筆，零延遲但中間成交量蒸發'
+    },
+    {
+      id: 'coalesce',
+      label: '🧬 Coalesce (智慧合併)',
+      desc: '一次抽乾並分桶濃縮為 60 筆，零延遲且完整保留總成交量'
+    }
+  ]
 
 export default function NaivePage() {
   const [currentTick, setCurrentTick] = useState<TradeTick | null>(null)
@@ -21,11 +44,13 @@ export default function NaivePage() {
 
   const {
     status: streamStatus,
+    strategy,
     latestTicks,
     metrics,
     start: startStream,
     stop: stopStream,
     reset: resetStream,
+    setStrategy,
     ingestTick,
     ingestDepth,
     burstInject
@@ -110,6 +135,8 @@ export default function NaivePage() {
       setQueueBenchmarking(false)
     }, 50)
   }
+
+  const batchTotalVolume = latestTicks.reduce((sum, tick) => sum + tick.size, 0)
 
   return (
     <div className='min-h-screen bg-zinc-50 p-8 font-sans text-zinc-900 dark:bg-black dark:text-zinc-100'>
@@ -226,27 +253,27 @@ export default function NaivePage() {
           )}
         </div>
 
-        {/* 4-D 環形緩衝區水位即時監控卡片 */}
+        {/* 4-D & 4-E 環形緩衝區水位監控與背壓三刀流實驗室 */}
         <div className='rounded-xl border border-indigo-200 bg-indigo-50/40 p-6 dark:border-indigo-900/50 dark:bg-indigo-950/20'>
           <div className='flex flex-col md:flex-row md:items-center justify-between gap-4 mb-4'>
             <div>
               <div className='flex items-center gap-2'>
                 <h2 className='text-sm font-bold text-indigo-950 dark:text-indigo-200'>
-                  🌊 4-D 環形緩衝水位即時監控 (Buffer Watermark Monitor)
+                  🌊 4-D / 4-E 環形緩衝水位監控 & 前端背壓三刀流實驗室
                 </h2>
                 <span
                   className={`px-2 py-0.5 text-[10px] font-mono font-bold uppercase rounded-full ${metrics.watermarkStatus === 'critical'
-                      ? 'bg-rose-500 text-white animate-pulse'
-                      : metrics.watermarkStatus === 'warning'
-                        ? 'bg-amber-500 text-white'
-                        : 'bg-emerald-500/20 text-emerald-700 dark:text-emerald-300'
+                    ? 'bg-rose-500 text-white animate-pulse'
+                    : metrics.watermarkStatus === 'warning'
+                      ? 'bg-amber-500 text-white'
+                      : 'bg-emerald-500/20 text-emerald-700 dark:text-emerald-300'
                     }`}
                 >
                   {metrics.watermarkStatus}
                 </span>
               </div>
               <p className='text-xs text-indigo-700/80 dark:text-indigo-400/80 mt-0.5'>
-                對標 Performance HUD：即時監測 TypedRingBuffer (4,096 格) 佔用率與 60FPS 排程消化過程
+                切換下方三種背壓策略後點擊「灌入 3,600 筆」，親眼比較水塔排空速度與成交量保留差異
               </p>
             </div>
 
@@ -275,6 +302,38 @@ export default function NaivePage() {
             </div>
           </div>
 
+          {/* 4-E 背壓策略三選一膠囊切換器 */}
+          <div className='grid grid-cols-1 md:grid-cols-3 gap-2.5 mb-5'>
+            {STRATEGY_OPTIONS.map((opt) => {
+              const active = strategy === opt.id
+              return (
+                <button
+                  key={opt.id}
+                  type='button'
+                  onClick={() => setStrategy(opt.id)}
+                  className={`text-left p-3 rounded-lg border transition cursor-pointer ${active
+                    ? 'border-indigo-600 bg-indigo-600/10 dark:border-indigo-400 dark:bg-indigo-500/20 shadow-xs'
+                    : 'border-zinc-200 bg-white/80 hover:bg-white dark:border-zinc-800 dark:bg-zinc-900/60'
+                    }`}
+                >
+                  <div className='flex items-center justify-between'>
+                    <span className='font-mono text-xs font-bold text-indigo-950 dark:text-indigo-200'>
+                      {opt.label}
+                    </span>
+                    {active && (
+                      <span className='text-[10px] font-mono font-bold px-1.5 py-0.5 rounded bg-indigo-600 text-white'>
+                        ACTIVE
+                      </span>
+                    )}
+                  </div>
+                  <p className='text-[11px] text-zinc-500 dark:text-zinc-400 mt-1 leading-snug'>
+                    {opt.desc}
+                  </p>
+                </button>
+              )
+            })}
+          </div>
+
           <div className='space-y-1.5 mb-4'>
             <div className='flex justify-between text-xs font-mono'>
               <span className='text-zinc-500 dark:text-zinc-400'>
@@ -296,10 +355,10 @@ export default function NaivePage() {
               />
               <div
                 className={`h-full transition-all duration-150 ${metrics.watermarkStatus === 'critical'
-                    ? 'bg-rose-500'
-                    : metrics.watermarkStatus === 'warning'
-                      ? 'bg-amber-500'
-                      : 'bg-emerald-500'
+                  ? 'bg-rose-500'
+                  : metrics.watermarkStatus === 'warning'
+                    ? 'bg-amber-500'
+                    : 'bg-emerald-500'
                   }`}
                 style={{ width: `${Math.min(100, Math.max(0, metrics.bufferUsage))}%` }}
               />
@@ -313,13 +372,13 @@ export default function NaivePage() {
             </div>
           </div>
 
-          <div className='grid grid-cols-2 md:grid-cols-4 gap-3 font-mono text-xs'>
+          <div className='grid grid-cols-2 md:grid-cols-5 gap-3 font-mono text-xs'>
             <div className='p-3 rounded-lg border border-zinc-200 bg-white dark:border-zinc-800 dark:bg-zinc-950'>
               <div className='text-[11px] text-zinc-400'>rAF 畫面幀率 (FPS)</div>
               <div className='mt-1 text-lg font-extrabold text-emerald-600 dark:text-emerald-400'>
                 {metrics.fps} FPS
               </div>
-              <div className='text-[10px] text-zinc-400'>最大消耗 3,600 筆/秒</div>
+              <div className='text-[10px] text-zinc-400'>單幀上限 60 筆</div>
             </div>
 
             <div className='p-3 rounded-lg border border-zinc-200 bg-white dark:border-zinc-800 dark:bg-zinc-950'>
@@ -331,19 +390,29 @@ export default function NaivePage() {
             </div>
 
             <div className='p-3 rounded-lg border border-zinc-200 bg-white dark:border-zinc-800 dark:bg-zinc-950'>
-              <div className='text-[11px] text-zinc-400'>滿載覆寫丟棄 (Dropped)</div>
+              <div className='text-[11px] text-zinc-400'>滿載溢流 (Ring Dropped)</div>
               <div className={`mt-1 text-lg font-extrabold ${metrics.droppedTicks > 0 ? 'text-rose-600 dark:text-rose-400' : 'text-zinc-700 dark:text-zinc-300'}`}>
                 {metrics.droppedTicks.toLocaleString()} 筆
               </div>
-              <div className='text-[10px] text-zinc-400'>超過 4,096 格自動覆寫舊值</div>
+              <div className='text-[10px] text-zinc-400'>超過 4,096 格覆寫</div>
             </div>
 
             <div className='p-3 rounded-lg border border-zinc-200 bg-white dark:border-zinc-800 dark:bg-zinc-950'>
-              <div className='text-[11px] text-zinc-400'>本幀抽出筆數 (Drained)</div>
+              <div className='text-[11px] text-zinc-400'>背壓濃縮/丟棄數</div>
+              <div className='mt-1 text-lg font-extrabold text-purple-600 dark:text-purple-400'>
+                {metrics.coalescedTicks.toLocaleString()} 筆
+              </div>
+              <div className='text-[10px] text-zinc-400'>策略: {strategy.toUpperCase()}</div>
+            </div>
+
+            <div className='p-3 rounded-lg border border-zinc-200 bg-white dark:border-zinc-800 dark:bg-zinc-950'>
+              <div className='text-[11px] text-zinc-400'>本批渲染筆數 / 總量</div>
               <div className='mt-1 text-lg font-extrabold text-indigo-600 dark:text-indigo-400'>
                 {latestTicks.length} 筆
               </div>
-              <div className='text-[10px] text-zinc-400'>狀態: {streamStatus}</div>
+              <div className='text-[10px] text-zinc-500'>
+                量: {batchTotalVolume.toFixed(1)} BTC
+              </div>
             </div>
           </div>
         </div>
