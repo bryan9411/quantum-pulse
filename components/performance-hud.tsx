@@ -3,6 +3,7 @@
 import React, { useId } from 'react'
 import { PanelCard } from '@/components/ui/panel-card'
 import { usePerformanceHUD } from '@/hooks/usePerformanceHUD'
+import type { PipelineMode } from '@/components/ab-mode-switch'
 import { cn } from '@/lib/utils'
 
 interface SparklineProps {
@@ -72,6 +73,7 @@ export interface PerformanceHUDProps {
   currentTps: number
   bufferUsage: number
   isRunning: boolean
+  mode: PipelineMode
   renderCount?: number
   className?: string
 }
@@ -80,14 +82,19 @@ export const PerformanceHUD = ({
   currentTps,
   bufferUsage,
   isRunning,
+  mode,
   renderCount,
   className
 }: PerformanceHUDProps) => {
   const hud = usePerformanceHUD({
     currentTps,
     bufferUsage,
-    isRunning
+    isRunning,
+    mode
   })
+
+  const isFpsLow = hud.fps < 45
+  const isBufferHigh = hud.bufferUsage >= 75
 
   return (
     <PanelCard
@@ -111,16 +118,23 @@ export const PerformanceHUD = ({
           <div className='text-[11px] font-medium text-zinc-400 dark:text-zinc-500'>
             FPS
           </div>
-          <div className='font-mono tabular-nums text-base font-extrabold text-zinc-900 dark:text-zinc-100'>
+          <div
+            className={cn(
+              'font-mono tabular-nums text-base font-extrabold',
+              isFpsLow
+                ? 'text-rose-600 dark:text-rose-400'
+                : 'text-zinc-900 dark:text-zinc-100'
+            )}
+          >
             {hud.fps}
           </div>
         </div>
         <Sparkline
           data={hud.fpsHistory}
-          strokeColor='#10b981'
-          fillColor='#10b981'
-          min={45}
-          max={62}
+          strokeColor={isFpsLow ? '#f43f5e' : '#10b981'}
+          fillColor={isFpsLow ? '#f43f5e' : '#10b981'}
+          min={5}
+          max={65}
         />
       </div>
 
@@ -165,14 +179,21 @@ export const PerformanceHUD = ({
           <div className='text-[11px] font-medium text-zinc-400 dark:text-zinc-500'>
             Buffer Usage
           </div>
-          <div className='font-mono tabular-nums text-base font-extrabold text-zinc-900 dark:text-zinc-100'>
+          <div
+            className={cn(
+              'font-mono tabular-nums text-base font-extrabold',
+              isBufferHigh
+                ? 'text-rose-600 dark:text-rose-400'
+                : 'text-zinc-900 dark:text-zinc-100'
+            )}
+          >
             {hud.bufferUsage.toFixed(1)}%
           </div>
         </div>
         <Sparkline
           data={hud.bufferHistory}
-          strokeColor='#f59e0b'
-          fillColor='#f59e0b'
+          strokeColor={isBufferHigh ? '#f43f5e' : '#f59e0b'}
+          fillColor={isBufferHigh ? '#f43f5e' : '#f59e0b'}
           min={0}
           max={100}
         />
@@ -180,4 +201,3 @@ export const PerformanceHUD = ({
     </PanelCard>
   )
 }
-

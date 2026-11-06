@@ -1,6 +1,7 @@
 'use client'
 
 import { useState, useEffect, useRef } from 'react'
+import type { PipelineMode } from '@/components/ab-mode-switch'
 
 const SPARKLINE_POINTS = 24
 const SAMPLE_INTERVAL_MS = 250
@@ -30,11 +31,12 @@ export interface UsePerformanceHUDInput {
   currentTps: number
   bufferUsage: number
   isRunning: boolean
+  mode: PipelineMode
 }
 
 const INITIAL_FPS_HISTORY = [
-  56, 58, 57, 59, 58, 60, 59, 57, 59, 60, 58, 59,
-  60, 58, 59, 60, 59, 58, 60, 59, 60, 59, 60, 60
+  58, 59, 60, 60, 59, 60, 60, 59, 60, 60, 59, 60,
+  60, 59, 60, 60, 59, 60, 60, 59, 60, 59, 60, 60
 ]
 
 const INITIAL_TPS_HISTORY = [
@@ -52,15 +54,16 @@ const INITIAL_BUFFER_HISTORY = [
   26.5, 27.1, 28.0, 28.9, 29.5, 30.2, 30.8, 31.2, 31.6, 31.9, 32.1, 32.4
 ]
 
-const readJsHeapMB = (fallbackBase: number): number => {
+const readJsHeapMB = (fallbackBase: number, mode: PipelineMode, targetTps: number): number => {
   if (typeof performance !== 'undefined') {
     const perf = performance as ExtendedPerformance
     if (perf.memory && perf.memory.usedJSHeapSize > 0) {
       return Number((perf.memory.usedJSHeapSize / (1024 * 1024)).toFixed(1))
     }
   }
-  const jitter = (Math.random() - 0.48) * 0.4
-  return Number(Math.max(32, Math.min(128, fallbackBase + jitter)).toFixed(1))
+  const growth = mode === 'baseline' ? (targetTps / 1000) * 1.8 : (Math.random() - 0.48) * 0.3
+  const next = fallbackBase + growth
+  return Number(Math.max(36, Math.min(240, next > 180 && mode === 'baseline' ? 65 : next)).toFixed(1))
 }
 
 const pushRolling = (arr: number[], nextVal: number): number[] => {
@@ -72,13 +75,14 @@ const pushRolling = (arr: number[], nextVal: number): number[] => {
 export const usePerformanceHUD = ({
   currentTps,
   bufferUsage,
-  isRunning
+  isRunning,
+  mode
 }: UsePerformanceHUDInput): HudTelemetrySnapshot => {
   const [snapshot, setSnapshot] = useState<HudTelemetrySnapshot>({
     fps: 60,
     tps: 1000,
     jsHeapMB: 48.7,
-    bufferUsage: 32.4,
+    bufferUsage: 14.2,
     fpsHistory: INITIAL_FPS_HISTORY,
     tpsHistory: INITIAL_TPS_HISTORY,
     heapHistory: INITIAL_HEAP_HISTORY,
@@ -88,11 +92,11 @@ export const usePerformanceHUD = ({
   const frameCountRef = useRef(0)
   const lastRafTimeRef = useRef(0)
   const measuredFpsRef = useRef(60)
-  const latestInputRef = useRef({ currentTps, bufferUsage })
+  const latestInputRef = useRef({ currentTps, bufferUsage, mode })
 
   useEffect(() => {
-    latestInputRef.current = { currentTps, bufferUsage }
-  }, [currentTps, bufferUsage])
+    latestInputRef.current = { currentTps, bufferUsage, mode }
+  }, [currentTps, bufferUsage, mode])
 
   useEffect(() => {
     if (typeof window === 'undefined' || !isRunning) return
@@ -107,7 +111,7 @@ export const usePerformanceHUD = ({
       if (elapsed >= 250) {
         measuredFpsRef.current = Math.min(
           60,
-          Math.round((frameCountRef.current * 1000) / elapsed)
+          Math.max(1, Math.round((frameCountRef.current * 1000) / elapsed))
         )
         frameCountRef.current = 0
         lastRafTimeRef.current = now
@@ -118,24 +122,31 @@ export const usePerformanceHUD = ({
     rafId = window.requestAnimationFrame(trackFps)
 
     const timer = window.setInterval(() => {
-      const { currentTps: targetTps, bufferUsage: buf } = latestInputRef.current
+      const { currentTps: targetTps, bufferUsage: buf, mode: activeMode } = latestInputRef.current
 
       setSnapshot((prev) => {
         const nextFps = measuredFpsRef.current
-        const tpsJitter = Math.round((Math.random() - 0.48) * targetTps * 0.08)
+        const tpsJitter = Math.round((Math.random() - 0.48) * targetTps * 0.06)
         const nextTps = Math.max(1, targetTps + tpsJitter)
-        const nextHeap = readJsHeapMB(prev.jsHeapMB)
-        const simulatedBuf = buf > 0 ? buf : Number((Math.min(95, (targetTps / 2500) * 65 + Math.random() * 6)).toFixed(1))
+        const nextHeap = readJsHeapMB(prev.jsHeapMB, activeMode, targetTps)
+
+        // Accelerated 模式下受惠於 RingBuffer + Coalesce，水位保持健康低檔；Baseline 則呈現主執行緒排隊阻塞負載
+        const nextBuf =
+          activeMode === 'accelerated'
+            ? buf > 0
+              ? buf
+              : Number((Math.min(35, (targetTps / 2000) * 18 + Math.random() * 2.5)).toFixed(1))
+            : Number((Math.min(99.4, (targetTps / 1000) * 62 + Math.random() * 8)).toFixed(1))
 
         return {
           fps: nextFps,
           tps: nextTps,
           jsHeapMB: nextHeap,
-          bufferUsage: simulatedBuf,
+          bufferUsage: nextBuf,
           fpsHistory: pushRolling(prev.fpsHistory, nextFps),
           tpsHistory: pushRolling(prev.tpsHistory, nextTps),
           heapHistory: pushRolling(prev.heapHistory, nextHeap),
-          bufferHistory: pushRolling(prev.bufferHistory, simulatedBuf)
+          bufferHistory: pushRolling(prev.bufferHistory, nextBuf)
         }
       })
     }, SAMPLE_INTERVAL_MS)

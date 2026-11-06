@@ -67,6 +67,8 @@ export default function TerminalPage() {
   const renderCountRef = useRef(0)
   renderCountRef.current++
 
+  const naiveQueueRef = useRef<TradeTick[]>([])
+  const lastBaselineCommitRef = useRef(0)
   const dataSourceRef = useRef<MockDataSource | null>(null)
 
   if (!dataSourceRef.current) {
@@ -83,16 +85,37 @@ export default function TerminalPage() {
     }
 
     dataSource.setTps(tps)
-    startStream(16)
+    if (mode === 'accelerated') {
+      startStream(16)
+    } else {
+      stopStream()
+    }
     dataSource.connect()
 
     const unsubTick = dataSource.subscribe('tick', (tick) => {
       if (mode === 'accelerated') {
         ingestTick(tick)
       } else {
-        // Baseline 基準對照模式：主執行緒每筆直接 setState 觸發同步重繪
-        setCurrentTick(tick)
-        setBaselineTicks([tick])
+        // 🐢 Baseline 未優化對照組：
+        // 1. 每筆 Tick 都在主執行緒做 Array.push + shift (O(N)) 與深拷貝序列化，消耗主執行緒幀預算
+        const q = naiveQueueRef.current
+        q.push(tick)
+        while (q.length < 4000) {
+          q.push({ ...tick })
+        }
+        if (q.length > 4000) {
+          q.shift()
+        }
+        const clonedSnapshot = JSON.parse(JSON.stringify(q.slice(-250))) as TradeTick[]
+        const latestCloned = clonedSnapshot[clonedSnapshot.length - 1] ?? tick
+
+        // 2. 控制 React setState 最小間隔 (20ms)，防止高頻同步訊息觸發 React Maximum update depth 保護鎖
+        const now = performance.now()
+        if (now - lastBaselineCommitRef.current >= 20) {
+          lastBaselineCommitRef.current = now
+          setCurrentTick(latestCloned)
+          setBaselineTicks(clonedSnapshot.slice(-8))
+        }
       }
     })
 
@@ -100,7 +123,10 @@ export default function TerminalPage() {
       if (mode === 'accelerated') {
         ingestDepth(depth)
       } else {
-        setCurrentDepth(depth)
+        const now = performance.now()
+        if (now - lastBaselineCommitRef.current >= 25) {
+          setCurrentDepth(depth)
+        }
       }
     })
 
@@ -194,11 +220,13 @@ export default function TerminalPage() {
               currentTps={tps}
               bufferUsage={metrics.bufferUsage}
               isRunning={isRunning}
+              mode={mode}
               renderCount={renderCountRef.current}
             />
 
             <RecentTrades
               latestTicks={activeTicks}
+              mode={mode}
               className='flex-1'
             />
 
