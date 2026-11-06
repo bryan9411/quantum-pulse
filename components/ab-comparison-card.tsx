@@ -11,8 +11,15 @@ export interface AbRecord {
   seconds: number
   fpsSum: number
   maxStallMs: number
+  /** 量測期間的總幀數與卡頓幀數（間隔 > 50ms） */
+  frames: number
+  longFrames: number
   autoPaused: boolean
 }
+
+/** 卡頓幀比例（%） */
+export const jankPercent = (r?: AbRecord): number | null =>
+  r && r.frames > 0 ? (r.longFrames / r.frames) * 100 : null
 
 export type AbRecords = Partial<Record<PipelineMode, AbRecord>>
 
@@ -32,9 +39,11 @@ const avgFps = (r?: AbRecord) => (r && r.seconds > 0 ? Math.round(r.fpsSum / r.s
 const resultOf = (r?: AbRecord): { text: string; tone: 'ok' | 'warn' | 'bad' } | null => {
   if (r?.autoPaused) return { text: '自動暫停', tone: 'bad' }
   if (!r || r.seconds === 0) return null
+  // 以「卡頓幀比例」判定，單一次偶發停頓（GC、切換視窗）不會讓整段測試被判為卡頓
   const fps = avgFps(r) ?? 0
-  if (fps >= 50 && r.maxStallMs < 100) return { text: '流暢', tone: 'ok' }
-  if (fps >= 25) return { text: '偶有卡頓', tone: 'warn' }
+  const jank = jankPercent(r) ?? 0
+  if (fps >= 50 && jank < 1) return { text: '流暢', tone: 'ok' }
+  if (fps >= 30 && jank < 5) return { text: '偶有卡頓', tone: 'warn' }
   return { text: '嚴重卡頓', tone: 'bad' }
 }
 
@@ -53,6 +62,13 @@ export const AbComparisonCard = ({ records, onClear, className }: AbComparisonCa
     { label: '測試 TPS', render: (r) => (r ? r.tps.toLocaleString() : '—') },
     { label: '測了幾秒', render: (r) => (r && r.seconds > 0 ? r.seconds : '—') },
     { label: '平均幀率', render: (r) => avgFps(r) ?? '—' },
+    {
+      label: '卡頓幀比例',
+      render: (r) => {
+        const jank = jankPercent(r)
+        return jank === null ? '—' : `${jank < 0.1 && jank > 0 ? '<0.1' : jank.toFixed(1)}%`
+      }
+    },
     {
       label: '最長畫面停頓',
       render: (r) => (r && (r.seconds > 0 || r.maxStallMs > 0) ? `${r.maxStallMs.toLocaleString()} ms` : '—')
@@ -111,6 +127,14 @@ export const AbComparisonCard = ({ records, onClear, className }: AbComparisonCa
           </React.Fragment>
         ))}
       </div>
+      <p className='mt-2.5 text-[11px] text-zinc-600 dark:text-zinc-300'>
+        卡頓幀 = 兩幀間隔超過 50ms。判定：卡頓幀 &lt; 1% 且幀率 ≥ 50 為流暢；切到其他分頁的時間不計入。
+      </p>
+      {process.env.NODE_ENV === 'development' && (
+        <p className='mt-1.5 rounded-md bg-amber-50 px-2 py-1 text-[11px] text-amber-800 dark:bg-amber-500/10 dark:text-amber-300'>
+          目前是開發模式（pnpm dev），React 會做額外檢查，數據會偏慢。正式對比請用 pnpm build 後 pnpm start。
+        </p>
+      )}
       {!hasAny && (
         <p className='mt-2.5 text-xs text-zinc-600 dark:text-zinc-300'>
           用同樣的 TPS 分別跑「優化版」和「未優化」各幾秒，這裡會自動記錄並排比較。

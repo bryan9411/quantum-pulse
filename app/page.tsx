@@ -74,6 +74,11 @@ export default function TerminalPage() {
     let lastSample = performance.now()
     let prev: FrameStats = readFrameStats()
     let sampleIndex = 0
+    let wasHiddenInWindow = document.hidden
+    const onVisibilityChange = () => {
+      if (document.hidden) wasHiddenInWindow = true
+    }
+    document.addEventListener('visibilitychange', onVisibilityChange)
 
     const timer = window.setInterval(() => {
       const now = performance.now()
@@ -93,34 +98,49 @@ export default function TerminalPage() {
         bufferUsage: cur.bufferUsage
       })
 
-      // 第一秒包含啟動成本，不列入 A/B 紀錄；自動暫停後到計時器清除前的取樣也略過
-      if (sampleIndex > 0 && !autoPausedRef.current) {
+      // 必須在這裡先算好：setAbRecords 的 updater 由 React 稍後執行，屆時 prev 已被改成 cur
+      const framesThisSecond = Math.max(0, cur.totalFrames - prev.totalFrames)
+      const longFramesThisSecond = Math.max(0, cur.longFrames - prev.longFrames)
+      const maxGapThisSecond = cur.maxFrameGapMs
+
+      // 第一秒包含啟動成本，不列入 A/B 紀錄；自動暫停後、或這一秒內分頁曾被隱藏，也略過。
+      // 計時器能準時執行、卻一幀都沒畫，代表主執行緒是空閒的、是瀏覽器暫停了繪製（視窗被遮住等），不算卡頓
+      // （若計時器本身也遲到超過 0.5 秒，代表主執行緒被卡住，那就是真的卡頓）
+      const browserThrottled = framesThisSecond === 0 && elapsedSec < 1.5
+      if (sampleIndex > 0 && !autoPausedRef.current && !wasHiddenInWindow && !browserThrottled) {
         setAbRecords((records) => {
           const existing = records[mode]
           const base =
             existing && existing.tps === tps && !existing.autoPaused
               ? existing
-              : { tps, seconds: 0, fpsSum: 0, maxStallMs: 0, autoPaused: false }
+              : { tps, seconds: 0, fpsSum: 0, maxStallMs: 0, frames: 0, longFrames: 0, autoPaused: false }
           return {
             ...records,
             [mode]: {
               ...base,
               seconds: base.seconds + 1,
-              fpsSum: base.fpsSum + cur.fps,
-              maxStallMs: Math.max(base.maxStallMs, cur.maxFrameGapMs)
+              // 用這一秒實際畫出的幀數計算，rAF 被卡住時不會沿用上一秒的舊值
+              fpsSum: base.fpsSum + framesThisSecond / elapsedSec,
+              maxStallMs: Math.max(base.maxStallMs, maxGapThisSecond),
+              frames: base.frames + framesThisSecond,
+              longFrames: base.longFrames + longFramesThisSecond
             }
           }
         })
       }
 
       sampleIndex++
+      wasHiddenInWindow = document.hidden
       prev = cur
       ticksReceivedRef.current = 0
       maxLagInWindowRef.current = 0
       lastSample = now
     }, 1000)
 
-    return () => window.clearInterval(timer)
+    return () => {
+      window.clearInterval(timer)
+      document.removeEventListener('visibilitychange', onVisibilityChange)
+    }
   }, [isRunning, mode, tps, readFrameStats])
 
   useEffect(() => {
@@ -171,7 +191,7 @@ export default function TerminalPage() {
             const base =
               existing && existing.tps === tpsRef.current && !existing.autoPaused
                 ? existing
-                : { tps: tpsRef.current, seconds: 0, fpsSum: 0, maxStallMs: 0, autoPaused: false }
+                : { tps: tpsRef.current, seconds: 0, fpsSum: 0, maxStallMs: 0, frames: 0, longFrames: 0, autoPaused: false }
             return { ...records, baseline: { ...base, autoPaused: true } }
           })
           setAutoPauseNotice(

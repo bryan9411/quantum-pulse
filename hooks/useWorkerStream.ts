@@ -55,7 +55,14 @@ export interface FrameStats {
   bufferUsage: number
   /** 上次讀取以來最長的兩幀間隔（ms），代表主執行緒最長停頓 */
   maxFrameGapMs: number
+  /** 累計畫面幀數（分頁隱藏期間不計） */
+  totalFrames: number
+  /** 累計卡頓幀數：兩幀間隔超過 LONG_FRAME_MS */
+  longFrames: number
 }
+
+/** 兩幀間隔超過此值視為一次肉眼可見的卡頓（約掉 3 幀） */
+export const LONG_FRAME_MS = 50
 
 export interface UseWorkerStreamReturn extends WorkerStreamState {
   readFrameStats: () => FrameStats
@@ -83,6 +90,8 @@ export const useWorkerStream = (): UseWorkerStreamReturn => {
   const renderedTicksRef = useRef(0)
   const lastFrameTimeRef = useRef(0)
   const maxFrameGapRef = useRef(0)
+  const totalFramesRef = useRef(0)
+  const longFramesRef = useRef(0)
 
   const [status, setStatus] = useState<'idle' | 'running' | 'stopped'>('idle')
   const [strategy, setStrategyState] = useState<BackpressureStrategy>('coalesce')
@@ -116,11 +125,14 @@ export const useWorkerStream = (): UseWorkerStreamReturn => {
 
     const renderFrame = (now: number) => {
       frameCountRef.current++
-      if (lastFrameTimeRef.current > 0) {
+      // 分頁隱藏時瀏覽器會暫停 rAF，回來後的那一大段間隔不是卡頓，不列入統計
+      if (lastFrameTimeRef.current > 0 && !document.hidden) {
         const gap = now - lastFrameTimeRef.current
         if (gap > maxFrameGapRef.current) maxFrameGapRef.current = gap
+        totalFramesRef.current++
+        if (gap > LONG_FRAME_MS) longFramesRef.current++
       }
-      lastFrameTimeRef.current = now
+      lastFrameTimeRef.current = document.hidden ? 0 : now
       const fpsElapsed = now - lastFpsSampleTimeRef.current
 
       if (fpsElapsed >= 1000) {
@@ -259,7 +271,9 @@ export const useWorkerStream = (): UseWorkerStreamReturn => {
       overwritten: ringBuffer.dropped,
       queueSize: ringBuffer.size,
       bufferUsage: ringBuffer.getUsageRatio(),
-      maxFrameGapMs: Math.round(maxFrameGapRef.current)
+      maxFrameGapMs: Math.round(maxFrameGapRef.current),
+      totalFrames: totalFramesRef.current,
+      longFrames: longFramesRef.current
     }
     maxFrameGapRef.current = 0
     return stats

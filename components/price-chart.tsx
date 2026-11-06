@@ -50,6 +50,16 @@ const SEED_HISTORY_SEC = 86400
 // 種子歷史的每秒波動（相對價格），24 小時約 ±6%
 const SEED_VOLATILITY_PER_SEC = 0.0002
 const MAX_HISTORY_SEC = SEED_HISTORY_SEC + 3600
+/**
+ * 交給圖表的資料點上限。lightweight-charts 每一幀的繪製成本與「序列總點數」成正比
+ * （實測 86,400 點約 19ms/幀、288 點約 1.6ms/幀），所以每個區間只保留可視範圍的數倍，
+ * 讓 1 分鐘區間也能維持滿幀。
+ */
+const MAX_SERIES_BARS = 2000
+const getMaxBars = (tf: Timeframe) => {
+  const { bucketSec, windowSec } = TIMEFRAME_CONFIG[tf]
+  return Math.min(MAX_SERIES_BARS, Math.ceil(windowSec / bucketSec) * 10)
+}
 
 interface SecondPoint {
   time: number
@@ -148,6 +158,9 @@ export const PriceChart = ({
   const seriesRef = useRef<ISeriesApi<'Area'> | null>(null)
   const historyRef = useRef<SecondPoint[]>([])
   const bucketSecRef = useRef(TIMEFRAME_CONFIG['1m'].bucketSec)
+  const timeframeRef = useRef<Timeframe>('1m')
+  const seriesBarCountRef = useRef(0)
+  const lastBucketTimeRef = useRef(0)
 
   /**
    * 以指定時間區間重建整條資料序列並調整可視範圍
@@ -159,9 +172,12 @@ export const PriceChart = ({
 
     const { bucketSec, windowSec } = TIMEFRAME_CONFIG[tf]
     bucketSecRef.current = bucketSec
+    timeframeRef.current = tf
 
-    const data = bucketize(historyRef.current, bucketSec)
+    const data = bucketize(historyRef.current, bucketSec).slice(-getMaxBars(tf))
     series.setData(data)
+    seriesBarCountRef.current = data.length
+    lastBucketTimeRef.current = data.length > 0 ? Number(data[data.length - 1].time) : 0
 
     chart.applyOptions({ timeScale: { secondsVisible: bucketSec < 60 } })
     const visibleBars = Math.ceil(windowSec / bucketSec)
@@ -273,8 +289,20 @@ export const PriceChart = ({
     }
 
     const bucketSec = bucketSecRef.current
+    const bucketTime = Math.floor(sec / bucketSec) * bucketSec
+
+    // 長時間運行後序列會持續變長，超過上限兩倍時重新裁切一次，避免繪製成本慢慢回升
+    if (bucketTime > lastBucketTimeRef.current) {
+      lastBucketTimeRef.current = bucketTime
+      seriesBarCountRef.current++
+      if (seriesBarCountRef.current > getMaxBars(timeframeRef.current) * 2) {
+        applyTimeframe(timeframeRef.current)
+        return
+      }
+    }
+
     series.update({
-      time: (Math.floor(sec / bucketSec) * bucketSec) as UTCTimestamp,
+      time: bucketTime as UTCTimestamp,
       value: lastTick.price
     })
   }, [latestTicks])
